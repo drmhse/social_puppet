@@ -1,0 +1,27 @@
+@startuml flow-stream
+' Rendered with: java -jar plantuml.jar -tsvg -o . docs/flow-stream.puml
+title Streaming a screen that mostly does not change
+
+!include style.iuml
+
+participant "app under\ncontrol" as A
+participant "bridge app" as B
+participant "server" as S
+
+B -[#C0391B]> S : WebSocket connect, then hello
+note right of B
+  The phone dials out, so it needs
+  no inbound address.
+end note
+
+loop every content change, at most one dump per 300 ms
+  A -> B : accessibility tree, one IPC per node
+  B -> B : walk it, hashing each node's fields
+  alt the hash differs from the last push
+    B -[#C0391B]> S : tree: nodes, windows, truncation flag
+  else unchanged
+    B -> B : nothing serialized, nothing sent
+  end
+end
+
+@enduml

@@ -1,0 +1,26 @@
+@startuml flow-command
+' Rendered with: java -jar plantuml.jar -tsvg -o . docs/flow-command.puml
+title Addressing by content, resolved late
+
+!include style.iuml
+
+participant "controller" as C
+participant "server" as S
+participant "bridge app" as B
+participant "app under\ncontrol" as A
+
+C -> S : tap the thing whose text is "Post"
+S -[#C0391B]> B : cmd
+B -> A : which node matches, right now?
+A -> B : node, at its current bounds
+B -> A : dispatch the gesture there
+B -[#C0391B]> S : result
+S -> C : ok
+
+note over B
+  The controller named the target.
+  The device located it, a fraction of a
+  second later than the screen it read.
+end note
+
+@enduml

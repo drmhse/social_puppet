@@ -1,0 +1,37 @@
+' Shared look for the diagrams: flat, one accent colour, no shadows.
+@startuml
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam TitleFontSize 16
+skinparam TitleFontColor #1A1A1A
+skinparam ArrowColor #1A1A1A
+skinparam ArrowFontColor #1A1A1A
+skinparam sequence {
+  ParticipantBackgroundColor #F2F0EE
+  ParticipantBorderColor #B9B4AF
+  ParticipantFontColor #1A1A1A
+  LifeLineBorderColor #D9D5D1
+  LifeLineBackgroundColor #F2F0EE
+  BoxBorderColor #D9D5D1
+  BoxFontColor #8C8681
+  GroupBackgroundColor #F2F0EE
+  GroupBorderColor #B9B4AF
+  GroupFontColor #1A1A1A
+  GroupHeaderFontColor #1A1A1A
+  DividerBackgroundColor #FFFFFF
+  DividerBorderColor #D9D5D1
+  DividerFontColor #8C8681
+}
+skinparam database {
+  BackgroundColor #F2F0EE
+  BorderColor #B9B4AF
+  FontColor #1A1A1A
+}
+skinparam note {
+  BackgroundColor #FCF3F1
+  BorderColor #C0391B
+  FontColor #1A1A1A
+}
+@enduml
