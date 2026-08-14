@@ -1,0 +1,15 @@
+{
+  "name": "social-puppet",
+  "private": true,
+  "description": "Drive social apps on a phone via an accessibility bridge — pi talks to a server, the server talks to a bridge app on the phone.",
+  "workspaces": [
+    "server",
+    "pi-extension"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w @social-puppet/server",
+    "start": "npm run start -w @social-puppet/server",
+    "mock": "npm run mock -w @social-puppet/server",
+    "build": "npm run build -w @social-puppet/server"
+  }
+}

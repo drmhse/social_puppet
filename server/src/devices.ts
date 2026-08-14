@@ -1,0 +1,217 @@
+import { randomUUID } from "node:crypto";
+import { WebSocket } from "ws";
+import {
+  A11yEvent,
+  CommandEnvelope,
+  DeviceInfo,
+  FlatEntry,
+  ResultEnvelope,
+  ScreenSize,
+  ScreenState,
+  TreeNode,
+  WaitMatch,
+} from "./types.js";
+import { entriesToText, flattenTree, matchEntries } from "./flatten.js";
+import { SessionLog } from "./log.js";
+
+interface Pending {
+  timer: NodeJS.Timeout;
+  resolve: (r: unknown) => void;
+}
+
+interface QueuedCmd {
+  cmdId: string;
+  cmd: string;
+  params: Record<string, unknown>;
+  deadline: number;
+  resolve: (r: unknown) => void;
+}
+
+const MAX_QUEUE = 8;
+const EVENT_RING = 200;
+
+/** State for one phone: socket, latest screen, event ring, command queue. */
+export class Device {
+  id: string;
+  name?: string;
+  appVersion?: string;
+  screen?: ScreenSize;
+  ws: WebSocket | null = null;
+  connected = false;
+  ready = false;
+  tree?: ScreenState;
+  events: A11yEvent[] = [];
+  nextEventSeq = 1;
+  lastSeen?: number;
+  pkg?: string;
+
+  private seq = 0;
+  private pending = new Map<string, Pending>();
+  private queue: QueuedCmd[] = [];
+  private pumping = false;
+
+  constructor(id: string, private log: SessionLog) {
+    this.id = id;
+  }
+
+  /** A new WS connection arrived for this device. Invalidate the old tree: it
+   *  describes a previous life of this device. */
+  attach(ws: WebSocket): void {
+    this.ws = ws;
+    this.connected = true;
+    this.lastSeen = Date.now();
+    this.tree = undefined;
+    this.ready = false;
+    this.pkg = undefined;
+  }
+
+  detach(): void {
+    this.connected = false;
+    this.ws = null;
+    this.ready = false;
+    const fail = (r: (v: unknown) => void) =>
+      r({ ok: false, error: "device_disconnected" });
+    for (const p of this.pending.values()) {
+      clearTimeout(p.timer);
+      fail(p.resolve);
+    }
+    this.pending.clear();
+    for (const q of this.queue.splice(0)) fail(q.resolve);
+    this.log.write({ kind: "device", id: this.id, action: "disconnect" });
+  }
+
+  hello(name?: string, appVersion?: string, screen?: ScreenSize): void {
+    this.name = name;
+    this.appVersion = appVersion;
+    this.screen = screen;
+    this.log.write({ kind: "device", id: this.id, action: "hello", name, appVersion, screen });
+  }
+
+  onTree(nodes: TreeNode[], pkg?: string, screen?: ScreenSize): void {
+    this.seq += 1;
+    const entries = flattenTree(nodes);
+    this.tree = { seq: this.seq, pkg, entries, nodes, at: Date.now() };
+    this.ready = true;
+    if (screen) this.screen = screen;
+    this.pushEvent({ kind: "screen", pkg });
+    this.log.write({
+      kind: "tree",
+      id: this.id,
+      seq: this.seq,
+      pkg,
+      entries: entries.length,
+      nodes: nodes.length,
+    });
+  }
+
+  onEvent(e: { kind: A11yEvent["kind"]; text?: string; pkg?: string; cls?: string }): void {
+    this.pushEvent(e);
+    if (e.kind === "window" && e.pkg) this.pkg = e.pkg;
+  }
+
+  private pushEvent(e: {
+    kind: A11yEvent["kind"];
+    text?: string;
+    pkg?: string;
+    cls?: string;
+  }): void {
+    this.events.push({ seq: this.nextEventSeq++, ts: Date.now(), ...e });
+    if (this.events.length > EVENT_RING) {
+      this.events.splice(0, this.events.length - EVENT_RING);
+    }
+  }
+
+  eventsSince(since: number): A11yEvent[] {
+    return this.events.filter((e) => e.seq > since);
+  }
+
+  /** Enqueue a command; resolves with `{ ok, result?, error? }`. */
+  sendCommand(cmd: string, params: Record<string, unknown>, timeoutMs = 15000): Promise<unknown> {
+    return new Promise((resolve) => {
+      if (!this.connected) return resolve({ ok: false, error: "device_disconnected" });
+      if (cmd !== "refresh" && !this.ready) return resolve({ ok: false, error: "device_not_ready" });
+      if (this.queue.length >= MAX_QUEUE) return resolve({ ok: false, error: "queue_full" });
+      this.queue.push({
+        cmdId: randomUUID(),
+        cmd,
+        params,
+        deadline: Date.now() + timeoutMs,
+        resolve,
+      });
+      this.log.write({ kind: "command", id: this.id, cmd, params });
+      this.pump();
+    });
+  }
+
+  private pump(): void {
+    if (this.pumping) return;
+    this.pumping = true;
+    while (this.queue.length > 0 && this.connected) {
+      const q = this.queue[0];
+      const wait = q.deadline - Date.now();
+      if (wait <= 0) {
+        this.queue.shift();
+        q.resolve({ ok: false, error: "timeout_queued" });
+        continue;
+      }
+      const env: CommandEnvelope = { type: "cmd", cmdId: q.cmdId, cmd: q.cmd, params: q.params };
+      try {
+        this.ws!.send(JSON.stringify(env));
+      } catch {
+        this.queue.shift();
+        q.resolve({ ok: false, error: "send_failed" });
+        continue;
+      }
+      this.queue.shift();
+      const timer = setTimeout(() => {
+        this.pending.delete(q.cmdId);
+        this.log.write({ kind: "command", id: this.id, cmdId: q.cmdId, outcome: "timeout" });
+        q.resolve({ ok: false, error: "timeout", cmdId: q.cmdId });
+      }, wait);
+      this.pending.set(q.cmdId, { timer, resolve: q.resolve });
+    }
+    this.pumping = false;
+  }
+
+  onResult(res: ResultEnvelope): void {
+    const p = this.pending.get(res.cmdId);
+    if (!p) return;
+    clearTimeout(p.timer);
+    this.pending.delete(res.cmdId);
+    this.log.write({
+      kind: "command",
+      id: this.id,
+      cmdId: res.cmdId,
+      outcome: res.ok ? "ok" : "error",
+      error: res.error,
+      result: res.result,
+    });
+    p.resolve({ ok: res.ok, result: res.result, error: res.error });
+  }
+
+  find(m: WaitMatch): FlatEntry | undefined {
+    return this.tree ? matchEntries(this.tree.entries, m) : undefined;
+  }
+
+  screenText(limit = 200): { text: string; truncated: boolean } {
+    return this.tree
+      ? entriesToText(this.tree.entries, limit)
+      : { text: "(no screen yet)", truncated: false };
+  }
+
+  info(): DeviceInfo {
+    return {
+      id: this.id,
+      name: this.name,
+      connected: this.connected,
+      ready: this.ready,
+      appVersion: this.appVersion,
+      screen: this.screen,
+      pkg: this.tree?.pkg,
+      treeSeq: this.tree?.seq,
+      treeAt: this.tree?.at,
+      lastSeen: this.lastSeen,
+      entries: this.tree?.entries.length ?? 0,
+    };
+  }
+}

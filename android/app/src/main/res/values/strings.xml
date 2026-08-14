@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">social-puppet bridge</string>
+    <string name="setup_label">Bridge setup</string>
+    <string name="accessibility_service_label">social-puppet bridge</string>
+    <string name="accessibility_service_description">Drives this phone from the social-puppet server: reads the screen as text and performs taps, typing, swipes and system keys. Only enable this if you run your own social-puppet server.</string>
+</resources>
