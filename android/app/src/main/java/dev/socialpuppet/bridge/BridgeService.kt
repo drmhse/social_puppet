@@ -2,6 +2,7 @@ package dev.socialpuppet.bridge
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -68,6 +69,18 @@ class BridgeService : AccessibilityService() {
         @Volatile
         var charging = false
 
+        /** The live service, if enabled — so setup can push config changes into it. */
+        @Volatile
+        private var instance: BridgeService? = null
+
+        /** Drop the current socket and reconnect using the freshly saved server URL /
+         *  token / device name. No-op when the service isn't enabled. */
+        fun applyConfigChange(): Boolean {
+            val svc = instance ?: return false
+            svc.mainHandler.post { svc.reconnect() }
+            return true
+        }
+
         private val activityLog = ArrayDeque<String>()
 
         fun log(s: String) {
@@ -85,8 +98,16 @@ class BridgeService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         Config.init(this)
+        instance = this
         startForegroundWithNotification()
         started = true
+        openConnection()
+        mainHandler.postDelayed(statusTick, 60_000)
+    }
+
+    /** Build a fresh [ServerConnection] against the current config and connect.
+     *  A closed ServerConnection can't be reused, so this always makes a new one. */
+    private fun openConnection() {
         lastTreeJson = null
         connection = ServerConnection(
             onCommand = { cmd, params, cmdId ->
@@ -106,9 +127,19 @@ class BridgeService : AccessibilityService() {
             },
         )
         connection?.connect(Config.wsUrl())
-        status = "service enabled — connecting…"
-        log("service enabled, connecting to ${Config.serverUrl}")
-        mainHandler.postDelayed(statusTick, 60_000)
+        status = "connecting…"
+        log("connecting to ${Config.serverUrl} as ${Config.deviceName}")
+    }
+
+    /** Tear the socket down and reopen against the current config. */
+    private fun reconnect() {
+        if (!started) return
+        log("config changed — reconnecting")
+        executor.clear()
+        connection?.close()
+        connection = null
+        updateNotification()
+        openConnection()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -127,6 +158,7 @@ class BridgeService : AccessibilityService() {
 
     override fun onDestroy() {
         started = false
+        instance = null
         mainHandler.removeCallbacks(statusTick)
         executor.clear()
         connection?.close()
@@ -144,25 +176,33 @@ class BridgeService : AccessibilityService() {
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL_ID, "Bridge status", NotificationManager.IMPORTANCE_LOW),
         )
+        ServiceCompat.startForeground(
+            this,
+            NOTIF_ID,
+            buildNotification(),
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+        )
+    }
+
+    private fun buildNotification(): Notification {
         val contentIntent = PendingIntent.getActivity(
             this,
             0,
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE,
         )
-        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+        return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_bridge_small)
             .setContentTitle("social-puppet bridge")
             .setContentText("server: ${Config.serverUrl}")
             .setContentIntent(contentIntent)
             .setOngoing(true)
             .build()
-        ServiceCompat.startForeground(
-            this,
-            NOTIF_ID,
-            notification,
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
-        )
+    }
+
+    /** Refresh the ongoing notification so it shows the current server. */
+    private fun updateNotification() {
+        getSystemService(NotificationManager::class.java).notify(NOTIF_ID, buildNotification())
     }
 
     // ------------------------------------------------------------------ screen pushing

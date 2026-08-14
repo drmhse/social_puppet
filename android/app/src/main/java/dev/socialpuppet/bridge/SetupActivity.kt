@@ -46,9 +46,20 @@ class SetupActivity : ComponentActivity() {
         nameInput.setText(Config.deviceName)
 
         findViewById<MaterialButton>(R.id.saveBtn).setOnClickListener {
+            val before = listOf(Config.serverUrl, Config.token, Config.deviceName)
             Config.serverUrl = serverInput.text.toString()
             Config.token = tokenInput.text.toString()
             Config.deviceName = nameInput.text.toString()
+            val after = listOf(Config.serverUrl, Config.token, Config.deviceName)
+            // A running bridge holds the old URL for the life of its socket, so make it
+            // drop that socket and dial the new one.
+            if (before != after && BridgeService.applyConfigChange()) {
+                android.widget.Toast.makeText(
+                    this,
+                    "Saved — reconnecting the bridge",
+                    android.widget.Toast.LENGTH_SHORT,
+                ).show()
+            }
             finish()
         }
         findViewById<MaterialButton>(R.id.testBtn).setOnClickListener { testConnection() }
