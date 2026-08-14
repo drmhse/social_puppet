@@ -1,7 +1,7 @@
 {
   "name": "social-puppet",
   "private": true,
-  "description": "Drive social apps on a phone via an accessibility bridge — pi talks to a server, the server talks to a bridge app on the phone.",
+  "description": "Drive an Android phone from an agent or a script, through the accessibility tree.",
   "workspaces": [
     "server",
     "pi-extension"
