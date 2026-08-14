@@ -1,14 +1,5 @@
 node_modules/
 server/data/
+server/dist/
 *.log
 *.jsonl
-
-# Android
-android/.gradle/
-android/build/
-android/app/build/
-android/local.properties
-android/.kotlin/
-*.apk
-*.aab
-.DS_Store

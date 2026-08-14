@@ -5,10 +5,11 @@ export interface ScreenSize {
 
 export interface TreeNode {
   id: number;
-  text?: string;
-  contentDesc?: string;
-  resourceId?: string;
-  className?: string;
+  // The bridge app serializes missing values as JSON null, so these are nullable.
+  text?: string | null;
+  contentDesc?: string | null;
+  resourceId?: string | null;
+  className?: string | null;
   clickable?: boolean;
   visible: boolean;
   /** left, top, right, bottom in screen px */

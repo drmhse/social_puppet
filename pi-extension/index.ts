@@ -12,11 +12,27 @@
  * Install: symlink this directory into ~/.pi/agent/extensions/ (or add its
  * index.ts to settings.json "extensions"), then /reload in pi.
  */
+import { readFileSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 const SERVER = (process.env.SOCIAL_PUPPET_SERVER ?? "http://127.0.0.1:8743").replace(/\/+$/, "");
-const TOKEN = process.env.SOCIAL_PUPPET_TOKEN ?? "";
+
+/**
+ * Token resolution: env var first (documented setup), then the deployed server's
+ * local env file so pi runs embedded in the bridge without a bridge restart.
+ */
+function resolveToken(): string {
+  if (process.env.SOCIAL_PUPPET_TOKEN) return process.env.SOCIAL_PUPPET_TOKEN;
+  try {
+    const txt = readFileSync("/etc/social-puppet.env", "utf8");
+    const m = txt.match(/^SOCIAL_PUPPET_TOKEN\s*=\s*(.+)$/m);
+    return m?.[1]?.trim() ?? "";
+  } catch {
+    return "";
+  }
+}
+const TOKEN = resolveToken();
 
 // ---------------------------------------------------------------------------
 // REST client (exported so the self-test can exercise it without a pi session)

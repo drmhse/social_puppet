@@ -8,15 +8,18 @@ export function flattenTree(nodes: TreeNode[]): FlatEntry[] {
     if (!n.visible) return;
     const [l, t, r, b] = n.bounds;
     if (r <= l || b <= t) return;
-    const hasText = n.text !== undefined && n.text.trim().length > 0;
-    const hasDesc = n.contentDesc !== undefined && n.contentDesc.trim().length > 0;
+    // App sends JSON null (not just undefined) for missing fields — treat both as absent.
+    const text = n.text ?? "";
+    const desc = n.contentDesc ?? "";
+    const hasText = text.trim().length > 0;
+    const hasDesc = desc.trim().length > 0;
     if (hasText || hasDesc || n.clickable) {
       out.push({
         id: n.id,
-        text: hasText ? n.text : undefined,
-        desc: hasDesc ? n.contentDesc : undefined,
-        resourceId: n.resourceId,
-        cls: n.className,
+        text: hasText ? text : undefined,
+        desc: hasDesc ? desc : undefined,
+        resourceId: n.resourceId ?? undefined,
+        cls: n.className ?? undefined,
         x: l,
         y: t,
         w: r - l,
