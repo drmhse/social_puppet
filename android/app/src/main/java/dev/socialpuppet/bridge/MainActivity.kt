@@ -1,23 +1,29 @@
 package dev.socialpuppet.bridge
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.provider.Settings
-import android.view.Gravity
-import android.widget.Button
-import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import com.google.android.material.button.MaterialButton
 
-/** Status + launcher for setup and the accessibility settings screen. */
+/** Status + launcher for setup, the accessibility settings screen, and battery
+ *  optimization (so the bridge survives backgrounding). */
 class MainActivity : ComponentActivity() {
 
-    private val statusText by lazy { TextView(this).apply { textSize = 16f } }
+    private lateinit var statusText: TextView
+    private lateinit var logText: TextView
+    private lateinit var batteryBtn: MaterialButton
 
     private val notifPermLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
@@ -26,28 +32,56 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         Config.init(this)
         requestNotificationPermissionIfNeeded()
-        setContentView(buildUi())
+        setContentView(R.layout.activity_main)
+
+        statusText = findViewById(R.id.statusText)
+        logText = findViewById(R.id.logText)
+        batteryBtn = findViewById(R.id.batteryBtn)
+
+        findViewById<MaterialButton>(R.id.setupBtn).setOnClickListener {
+            startActivity(Intent(this, SetupActivity::class.java))
+        }
+        findViewById<MaterialButton>(R.id.a11yBtn).setOnClickListener {
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        }
+        findViewById<MaterialButton>(R.id.batteryBtn).setOnClickListener {
+            requestIgnoreBatteryOptimizations()
+        }
+        findViewById<MaterialButton>(R.id.refreshBtn).setOnClickListener { refresh() }
     }
 
     override fun onResume() {
         super.onResume()
-        refreshStatus()
+        refresh()
     }
 
-    private fun refreshStatus() {
-        val enabled = isAccessibilityEnabled()
-        statusText.text =
-            buildString {
-                appendLine("device id: ${Config.deviceId}")
-                appendLine("server:    ${Config.serverUrl}")
-                appendLine("token:     ${if (Config.token.isBlank()) "(none)" else "set"}")
-                appendLine("a11y:      ${if (enabled) "ENABLED" else "disabled"}")
-                appendLine("bridge:    ${BridgeService.status}")
-                if (!enabled) {
-                    appendLine()
-                    append("Enable the accessibility service below to start the bridge.")
-                }
+    private fun refresh() {
+        statusText.text = buildString {
+            appendLine("device id: ${Config.deviceId}")
+            appendLine("server:    ${Config.serverUrl}")
+            appendLine("token:     ${if (Config.token.isBlank()) "(none)" else "set"}")
+            appendLine("a11y:      ${if (isAccessibilityEnabled()) "ENABLED" else "disabled"}")
+            appendLine("bridge:    ${BridgeService.status}")
+            val b = BridgeService.battery
+            appendLine(
+                "battery:   ${if (b != null) "$b%${if (BridgeService.charging) " (charging)" else ""}" else "unknown"}",
+            )
+            appendLine("battery opt: ${if (isIgnoringBatteryOptimizations()) "exempt" else "not exempt"}")
+            if (!isAccessibilityEnabled()) {
+                appendLine()
+                append("Enable the accessibility service below to start the bridge.")
             }
+        }
+        // The battery button mirrors the exemption state.
+        if (isIgnoringBatteryOptimizations()) {
+            batteryBtn.text = "Background battery use: allowed"
+            batteryBtn.setIconResource(android.R.drawable.presence_online)
+        } else {
+            batteryBtn.text = "Allow background battery use"
+            batteryBtn.setIconResource(android.R.drawable.ic_menu_help)
+        }
+        logText.text = BridgeService.logSnapshot().joinToString("\n")
+            .ifEmpty { "— nothing logged yet —" }
     }
 
     private fun isAccessibilityEnabled(): Boolean {
@@ -69,40 +103,21 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun buildUi(): LinearLayout {
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(32, 64, 32, 32)
+    private fun requestIgnoreBatteryOptimizations() {
+        if (isIgnoringBatteryOptimizations()) {
+            Toast.makeText(this, "Background battery use already allowed", Toast.LENGTH_SHORT).show()
+            return
         }
-        val title = TextView(this).apply {
-            text = "social-puppet bridge"
-            textSize = 24f
-        }
-        root.addView(title)
-        root.addView(statusText)
+        startActivity(
+            Intent(
+                Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                Uri.parse("package:$packageName"),
+            ),
+        )
+    }
 
-        root.addView(
-            Button(this).apply {
-                text = "Setup (server URL / token)"
-                setOnClickListener {
-                    startActivity(Intent(this@MainActivity, SetupActivity::class.java))
-                }
-            },
-        )
-        root.addView(
-            Button(this).apply {
-                text = "Accessibility settings"
-                setOnClickListener {
-                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                }
-            },
-        )
-        root.addView(
-            Button(this).apply {
-                text = "Refresh status"
-                setOnClickListener { refreshStatus() }
-            },
-        )
-        return root
+    private fun isIgnoringBatteryOptimizations(): Boolean {
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        return pm.isIgnoringBatteryOptimizations(packageName)
     }
 }

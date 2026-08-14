@@ -51,4 +51,15 @@ object Config {
         val url = if (base.startsWith("ws://") || base.startsWith("wss://")) base else "ws://$base"
         return if (token.isBlank()) url else "$url/?token=${URLEncoder.encode(token, "UTF-8")}"
     }
+
+    /** Same server as an http(s) URL, for health checks. */
+    fun httpFromWs(ws: String): String {
+        val base = ws.trim().removeSuffix("/")
+        return when {
+            base.startsWith("wss://") -> "https://" + base.removePrefix("wss://")
+            base.startsWith("ws://") -> "http://" + base.removePrefix("ws://")
+            base.startsWith("https://") -> base
+            else -> "http://$base"
+        }
+    }
 }

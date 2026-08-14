@@ -6,9 +6,11 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.graphics.Path
 import android.graphics.Rect
+import android.os.BatteryManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
@@ -50,6 +52,23 @@ class BridgeService : AccessibilityService() {
 
         @Volatile
         var lastLaunchError: String? = null
+
+        @Volatile
+        var battery: Int? = null
+
+        @Volatile
+        var charging = false
+
+        private val activityLog = ArrayDeque<String>()
+
+        fun log(s: String) {
+            synchronized(activityLog) {
+                activityLog.addLast(java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date()) + "  " + s)
+                while (activityLog.size > 30) activityLog.removeFirst()
+            }
+        }
+
+        fun logSnapshot(): List<String> = synchronized(activityLog) { activityLog.toList() }
     }
 
     // ------------------------------------------------------------------ lifecycle
@@ -62,11 +81,22 @@ class BridgeService : AccessibilityService() {
         lastTreeJson = null
         connection = ServerConnection(
             onCommand = { cmd, params, cmdId -> executor.enqueue(cmd, params, cmdId) },
-            onStatus = { s -> status = s },
-            onOpen = { mainHandler.post { sendHello(); pushTree(force = true) } },
+            onStatus = { s ->
+                status = s
+                log(s)
+            },
+            onOpen = {
+                mainHandler.post {
+                    sendHello()
+                    sendStatusNow()
+                    pushTree(force = true)
+                }
+            },
         )
         connection?.connect(Config.wsUrl())
         status = "service enabled — connecting…"
+        log("service enabled, connecting to ${Config.serverUrl}")
+        mainHandler.postDelayed(statusTick, 60_000)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -85,10 +115,12 @@ class BridgeService : AccessibilityService() {
 
     override fun onDestroy() {
         started = false
+        mainHandler.removeCallbacks(statusTick)
         executor.clear()
         connection?.close()
         connection = null
         status = "service not running"
+        log("service stopped")
         gestureThread.quitSafely()
         super.onDestroy()
     }
@@ -171,6 +203,39 @@ class BridgeService : AccessibilityService() {
 
     private fun sendHello() {
         connection?.send(helloJson().toString())
+    }
+
+    /** Battery level (%) + charging state, pushed on connect and every 60s. */
+    private fun batteryInfo(): Pair<Int?, Boolean> {
+        val bm = getSystemService(BATTERY_SERVICE) as? BatteryManager
+        val level = bm?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)?.takeIf { it in 0..100 }
+        val sticky = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        val isCharging = sticky?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ==
+            BatteryManager.BATTERY_STATUS_CHARGING ||
+            sticky?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) == BatteryManager.BATTERY_STATUS_FULL
+        return level to isCharging
+    }
+
+    private fun sendStatusNow() {
+        if (!started) return
+        val (level, isCharging) = batteryInfo()
+        battery = level
+        charging = isCharging
+        connection?.send(
+            JSONObject()
+                .put("type", "status")
+                .put("battery", level ?: JSONObject.NULL)
+                .put("charging", isCharging)
+                .toString(),
+        )
+    }
+
+    private val statusTick = object : Runnable {
+        override fun run() {
+            if (!started) return
+            sendStatusNow()
+            mainHandler.postDelayed(this, 60_000)
+        }
     }
 
     private fun helloJson(): JSONObject {

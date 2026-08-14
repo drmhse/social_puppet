@@ -44,6 +44,9 @@ export class Device {
   nextEventSeq = 1;
   lastSeen?: number;
   pkg?: string;
+  battery?: number;
+  charging?: boolean;
+  lastStatusAt?: number;
 
   private seq = 0;
   private pending = new Map<string, Pending>();
@@ -107,6 +110,13 @@ export class Device {
   onEvent(e: { kind: A11yEvent["kind"]; text?: string; pkg?: string; cls?: string }): void {
     this.pushEvent(e);
     if (e.kind === "window" && e.pkg) this.pkg = e.pkg;
+  }
+
+  /** Periodic health/status from the app (battery, charging). */
+  onStatus(battery?: number, charging?: boolean): void {
+    this.battery = battery;
+    this.charging = charging;
+    this.lastStatusAt = Date.now();
   }
 
   private pushEvent(e: {
@@ -211,6 +221,9 @@ export class Device {
       treeSeq: this.tree?.seq,
       treeAt: this.tree?.at,
       lastSeen: this.lastSeen,
+      battery: this.battery,
+      charging: this.charging,
+      lastStatusAt: this.lastStatusAt,
       entries: this.tree?.entries.length ?? 0,
     };
   }

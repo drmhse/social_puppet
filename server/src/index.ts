@@ -291,6 +291,15 @@ wss.on("connection", (ws: WebSocket) => {
         });
         break;
       }
+      case "status": {
+        const d = device;
+        if (!d) return;
+        d.onStatus(
+          typeof msg.battery === "number" ? msg.battery : undefined,
+          typeof msg.charging === "boolean" ? msg.charging : undefined,
+        );
+        break;
+      }
       case "result": {
         const d = device;
         if (!d) return;

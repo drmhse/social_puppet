@@ -59,6 +59,8 @@ export interface DeviceSummary {
   ready: boolean;
   pkg?: string;
   entries: number;
+  battery?: number;
+  charging?: boolean;
 }
 
 export async function listDevices(): Promise<DeviceSummary[]> {
@@ -167,7 +169,8 @@ export default function (pi: ExtensionAPI) {
         .map(
           (d) =>
             `• ${d.name ?? d.id} (${d.id}) — ${d.connected ? (d.ready ? "ready" : "connecting…") : "disconnected"}` +
-            `${d.pkg ? ` · showing ${d.pkg}` : ""}${d.entries ? ` · ${d.entries} nodes` : ""}`,
+            `${d.pkg ? ` · showing ${d.pkg}` : ""}${d.entries ? ` · ${d.entries} nodes` : ""}` +
+            `${d.battery !== undefined ? ` · battery ${d.battery}%${d.charging ? " (charging)" : ""}` : ""}`,
         )
         .join("\n");
       return ok(text, { devices: list });

@@ -30,6 +30,7 @@ every later message is attributed to the WS connection it arrived on.
 { "type": "hello", "deviceId": "pixel-8", "name": "Pixel 8", "appVersion": "0.1.0", "screen": { "w": 1080, "h": 2400 } }
 { "type": "tree", "seq": 7, "pkg": "com.twitter.android", "nodes": [ … ] }          // full tree push
 { "type": "event", "kind": "window" | "node", "pkg": "com.twitter.android", "text": "Profile", "cls": "…" }
+{ "type": "status", "battery": 87, "charging": true }            // periodic (~60s) health
 { "type": "result", "cmdId": "…", "ok": true, "result": { … } }                      // reply to a cmd
 { "type": "pong" }
 ```

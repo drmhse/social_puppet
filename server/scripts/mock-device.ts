@@ -146,7 +146,6 @@ function pushTree(): void {
   ws.send(JSON.stringify({ type: "tree", seq, pkg: app, nodes: currentTree() }));
   ws.send(JSON.stringify({ type: "event", kind: "window", pkg: app, cls: screen }));
 }
-
 function handleCommand(cmd: string, params: Record<string, unknown>): { ok: boolean; result?: unknown; error?: string } {
   switch (cmd) {
     case "launch": {
@@ -223,6 +222,7 @@ function connect(): void {
         screen: { w: SCREEN[0], h: SCREEN[1] },
       }),
     );
+    ws?.send(JSON.stringify({ type: "status", battery: 91, charging: true }));
     pushTree();
   });
   ws.on("message", (data) => {

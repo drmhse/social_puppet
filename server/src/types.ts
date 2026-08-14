@@ -94,5 +94,8 @@ export interface DeviceInfo {
   treeSeq?: number;
   treeAt?: number;
   lastSeen?: number;
+  battery?: number;
+  charging?: boolean;
+  lastStatusAt?: number;
   entries: number;
 }
