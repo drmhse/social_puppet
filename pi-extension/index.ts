@@ -14,6 +14,8 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { readFileSync } from "node:fs";
+import { basename } from "node:path";
 
 const SERVER = (process.env.SOCIAL_PUPPET_SERVER ?? "http://127.0.0.1:8743").replace(/\/+$/, "");
 const TOKEN = process.env.SOCIAL_PUPPET_TOKEN ?? "";
@@ -128,6 +130,87 @@ export async function waitForMatch(
 export async function refreshScreen(device?: string): Promise<void> {
   const d = await pickDevice(device);
   await api(`/devices/${encodeURIComponent(d.id)}/refresh`, { json: {} });
+}
+
+// ---------------------------------------------------------------------------
+// File transfer (images/videos) — staged on the server, downloaded by the app
+// ---------------------------------------------------------------------------
+
+const MIME: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".heic": "image/heic",
+  ".mp4": "video/mp4",
+  ".mov": "video/quicktime",
+  ".webm": "video/webm",
+  ".mkv": "video/x-matroska",
+  ".3gp": "video/3gpp",
+};
+
+export function mimeFor(path: string): string | undefined {
+  const dot = path.lastIndexOf(".");
+  return dot >= 0 ? MIME[path.slice(dot).toLowerCase()] : undefined;
+}
+
+export interface UploadResult {
+  fileId: string;
+  name: string;
+  mime: string;
+  size: number;
+  phonePath: string;
+}
+
+/** Upload a local file to the server, then command the phone to download it. */
+export async function uploadToDevice(
+  device: string | undefined,
+  filePath: string,
+): Promise<UploadResult> {
+  const buf = readFileSync(filePath);
+  const name = basename(filePath);
+  const mime = mimeFor(filePath) ?? "application/octet-stream";
+  const headers: Record<string, string> = {
+    "content-type": mime,
+    "x-file-name": encodeURIComponent(name),
+    "x-file-mime": mime,
+    "x-file-size": String(buf.length),
+  };
+  if (TOKEN) headers["authorization"] = `Bearer ${TOKEN}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 300_000);
+  let res: Response;
+  try {
+    res = await fetch(`${SERVER}/api/v1/transfer`, {
+      method: "POST",
+      headers,
+      body: buf,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+  const text = await res.text();
+  let data: any = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = text;
+  }
+  if (!res.ok) {
+    throw new Error(`${res.status} ${data?.error?.message ?? "upload failed"}`);
+  }
+  const t = data as { fileId: string; name: string; mime: string; size: number };
+  const put = await sendCommand(device, "putFile", { fileId: t.fileId, name: t.name, mime: t.mime }, 300_000);
+  if (!put.ok) throw new Error(`putFile failed: ${put.error}`);
+  return {
+    fileId: t.fileId,
+    name: t.name,
+    mime: t.mime,
+    size: t.size,
+    phonePath: String((put.result as { path?: string } | undefined)?.path ?? ""),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -379,6 +462,56 @@ export default function (pi: ExtensionAPI) {
       await refreshScreen(params.device);
       const s = await fetchScreen(params.device, 40);
       return ok(`refreshed — ${s.pkg ?? "?"} · ${s.entries.length} nodes\n\n${s.text}`, s);
+    },
+  });
+
+  pi.registerTool({
+    name: "puppet_send_file",
+    label: "Puppet Send File",
+    description:
+      "Send a local file (image/video/etc) to the phone's bridge cache so it can be attached or shared. Returns a fileId (and the on-device name) for puppet_share.",
+    promptSnippet: "Send a local image/video to the phone",
+    promptGuidelines: [
+      "Use puppet_send_file to push a local image/video to the phone, then puppet_share to hand it to an app (e.g. the X composer).",
+    ],
+    parameters: Type.Object({
+      path: Type.String({ description: "local file path" }),
+      device: Type.Optional(Type.String()),
+    }),
+    async execute(_id, params) {
+      const r = await uploadToDevice(params.device, params.path);
+      const kb = (r.size / 1024).toFixed(1);
+      return ok(
+        `uploaded ${r.name} (${kb} KiB, ${r.mime}) → phone ${r.phonePath}\nfileId: ${r.fileId}`,
+        r,
+      );
+    },
+  });
+
+  pi.registerTool({
+    name: "puppet_share",
+    label: "Puppet Share",
+    description:
+      "Share a file already on the phone (name/fileId from puppet_send_file) to an app. targetPackage com.twitter.android opens the X composer with the media attached; omit it for the system chooser.",
+    promptSnippet: "Share a sent file to an app (e.g. the X composer)",
+    promptGuidelines: [
+      "Use puppet_share after puppet_send_file to hand the file to an app; targetPackage com.twitter.android opens the X composer with the media attached.",
+    ],
+    parameters: Type.Object({
+      name: Type.Optional(Type.String({ description: "on-device file name from puppet_send_file" })),
+      fileId: Type.Optional(Type.String({ description: "fallback filename if no name given" })),
+      mime: Type.Optional(Type.String()),
+      targetPackage: Type.Optional(Type.String({ description: "e.g. com.twitter.android (default: chooser)" })),
+      device: Type.Optional(Type.String()),
+    }),
+    async execute(_id, params) {
+      const cmdParams: Record<string, unknown> = {};
+      if (params.name !== undefined) cmdParams.name = params.name;
+      if (params.fileId !== undefined) cmdParams.fileId = params.fileId;
+      if (params.mime !== undefined) cmdParams.mime = params.mime;
+      if (params.targetPackage !== undefined) cmdParams.targetPackage = params.targetPackage;
+      const r = await sendCommand(params.device, "shareFile", cmdParams);
+      return ok(`share: ${describe(r)}`, r);
     },
   });
 

@@ -4,6 +4,13 @@ import { URL } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
 import { Device } from "./devices.js";
 import { SessionLog } from "./log.js";
+import {
+  initTransferDir,
+  loadTransferMeta,
+  saveTransfer,
+  streamTransfer,
+  transferIdOk,
+} from "./transfer.js";
 import { HelloMessage, ResultEnvelope, WaitMatch } from "./types.js";
 
 const PORT = Number(process.env.PORT ?? 8743);
@@ -18,6 +25,7 @@ if (TOKEN === "") {
 }
 
 const log = new SessionLog(LOGGING ? LOG_DIR : undefined);
+void initTransferDir(join(LOG_DIR, "transfer"));
 const devices = new Map<string, Device>();
 const wsToDevice = new WeakMap<WebSocket, Device>();
 
@@ -94,6 +102,22 @@ async function handleApi(
     return sendJson(res, 200, { ok: true, devices: devices.size });
   }
 
+  // POST /transfer — stage a file for the phone (raw body)
+  if (seg[0] === "transfer" && seg.length === 1) {
+    if (method !== "POST") return sendJson(res, 405, { error: { code: "method", message: "POST only" } });
+    const name = decodeURIComponent(String(req.headers["x-file-name"] ?? "file"));
+    const mime = String(req.headers["x-file-mime"] ?? "application/octet-stream");
+    const meta = await saveTransfer(req, name, mime);
+    log.write({ kind: "transfer", fileId: meta.fileId, name: meta.name, mime: meta.mime, size: meta.size });
+    return sendJson(res, 200, {
+      fileId: meta.fileId,
+      name: meta.name,
+      mime: meta.mime,
+      size: meta.size,
+      url: `/transfer/${meta.fileId}`,
+    });
+  }
+
   // /devices[...]
   if (seg[0] !== "devices") {
     return sendJson(res, 404, { error: { code: "not_found", message: `no route ${path}` } });
@@ -159,11 +183,11 @@ async function handleApi(
       timeoutMs?: number;
     };
     const cmd = body.cmd;
-    const known = ["launch", "tap", "setText", "swipe", "keyevent", "scroll", "refresh", "panic"];
+    const known = ["launch", "tap", "setText", "swipe", "keyevent", "scroll", "refresh", "panic", "putFile", "shareFile"];
     if (typeof cmd !== "string" || !known.includes(cmd)) {
       return sendJson(res, 400, { error: { code: "bad_command", message: `unknown command '${String(cmd)}'` } });
     }
-    const timeoutMs = Math.min(Math.max(Number(body.timeoutMs) || 15000, 500), 120000);
+    const timeoutMs = Math.min(Math.max(Number(body.timeoutMs) || 15000, 500), 600000);
     const result = (await d.sendCommand(cmd, body.params ?? {}, timeoutMs)) as {
       ok: boolean;
       error?: string;
@@ -186,7 +210,7 @@ async function handleApi(
     if (!match.text && !match.resourceId && !match.contentDesc) {
       return sendJson(res, 400, { error: { code: "bad_match", message: "match needs text, resourceId or contentDesc" } });
     }
-    const timeoutMs = Math.min(Math.max(Number(body.timeoutMs) || 15000, 500), 120000);
+    const timeoutMs = Math.min(Math.max(Number(body.timeoutMs) || 15000, 500), 600000);
     const deadline = Date.now() + timeoutMs;
     let lastRefresh = 0;
     for (;;) {
@@ -224,6 +248,23 @@ const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (url.pathname === "/health") {
       return sendJson(res, 200, { ok: true, devices: devices.size });
+    }
+    if (url.pathname.startsWith("/transfer/")) {
+      if ((req.method ?? "GET") !== "GET") {
+        return sendJson(res, 405, { error: { code: "method", message: "GET only" } });
+      }
+      const id = url.pathname.slice("/transfer/".length);
+      if (!transferIdOk(id)) {
+        return sendJson(res, 404, { error: { code: "not_found", message: "no such transfer" } });
+      }
+      const meta = await loadTransferMeta(id);
+      if (!meta) {
+        return sendJson(res, 404, { error: { code: "not_found", message: "no such transfer" } });
+      }
+      if (!streamTransfer(res, id, meta)) {
+        return sendJson(res, 404, { error: { code: "not_found", message: "file missing" } });
+      }
+      return;
     }
     if (!url.pathname.startsWith("/api/v1/")) {
       return sendJson(res, 404, { error: { code: "not_found", message: `no route ${url.pathname}` } });
