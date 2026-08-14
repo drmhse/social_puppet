@@ -1,102 +1,152 @@
 # social-puppet
 
-Drive an Android phone from an agent or a script, through the accessibility tree.
+**Drive an Android phone from an agent or a script, through the accessibility tree.**
 
-A bridge app on the phone reads the live accessibility tree, sends it as text, and
-performs taps, typing and gestures. A server relays between it and whatever is driving.
-The phone dials out, so it needs no inbound address; nothing ever connects to it.
+Every Android app publishes a live, structured description of its screen so screen
+readers can speak it. social-puppet reads that description, hands it to whatever is
+driving as plain text, and performs the taps, typing and gestures that come back. No
+vision model, no cabled `adb` session, no app that had to agree to be automated.
 
 ```
 controller ──HTTP──▶ server ◀──WebSocket── bridge app ──AccessibilityService──▶ phone UI
 ```
 
-Control is only ever the app. `adb` installs it and, in development, provides a network
-tunnel; it never drives the device.
+The phone dials out, so it works from behind NAT with no inbound address and survives
+moving between Wi-Fi and cellular. `adb` installs the app and, in development, provides
+a network tunnel; it never drives the device.
 
-## What it can do
+There is a longer write-up of the design in
+[Driving a Phone Through Its Accessibility Tree](https://www.drmhse.com/posts/driving-a-phone-through-its-accessibility-tree/).
 
-Read the screen as text, including the keyboard and system windows. Tap, type, swipe
-and scroll, addressing elements by their text, content description or resource id
-rather than coordinates. Scroll until something appears. Take a real screenshot for the
-questions text cannot answer. Move files both ways and hand one to another app.
-
-Three limits have no workaround: `FLAG_SECURE` windows (banking, DRM video) cannot be
-captured, an accessibility service cannot dismiss the lock screen, and Android exposes
-global actions rather than arbitrary key codes.
-
-## Quickstart, no phone needed
+## Try it in two minutes, no phone required
 
 ```sh
 npm install
 npm run start                        # server on :8743
-npm run mock                         # a fake phone, in another terminal
-npx tsx pi-extension/self-test.ts    # end-to-end check
+npm run mock                         # a simulated phone, in another terminal
+npx tsx pi-extension/self-test.ts    # drives it end to end
 ```
 
-## With a phone
+The self-test lists devices, reads a screen as text, taps by content, waits for the
+result, moves a file each way and takes a screenshot. It is also the fastest way to see
+the shape of the API before wiring up hardware.
+
+## Add a real phone
 
 ```sh
 cd android
-JAVA_HOME=<a JDK 17+> ./gradlew :app:assembleDebug
+JAVA_HOME=<a JDK 17 or newer> ./gradlew :app:assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb reverse tcp:8743 tcp:8743        # or point the app at your machine's LAN IP
 ```
 
-In the app: Setup, enter the server URL and token, Save. Then Accessibility settings
-and turn the bridge on. Android 13 and later hide that toggle for sideloaded apps until
-"Restricted setting" is allowed from the app's info page.
+In the app: **Setup**, enter the server URL and token, **Save**. Then **Accessibility
+settings** and turn the bridge on. Android 13 and later hide that toggle for sideloaded
+apps until you allow "Restricted setting" from the app's info page.
 
-Verified on a Pixel 9. Requires Android 8 or later, Android 11 for screenshots.
+Tested on a Pixel 9. Needs Android 8 or newer; screenshots need Android 11.
 
-## Driving it
+## What driving it looks like
 
-The controller is a pi extension registering `puppet_*` tools: `puppet_devices`,
-`puppet_screen`, `puppet_screenshot`, `puppet_launch`, `puppet_tap`, `puppet_type`,
-`puppet_swipe`, `puppet_scroll`, `puppet_scroll_to`, `puppet_key`, `puppet_wait`,
-`puppet_refresh`, `puppet_send_file`, `puppet_get_file`, `puppet_share`,
-`puppet_panic`. Symlink `pi-extension/` into `~/.pi/agent/extensions/` and `/reload`.
-It reads `SOCIAL_PUPPET_SERVER` (default `http://127.0.0.1:8743`) and
-`SOCIAL_PUPPET_TOKEN`.
+Anything that speaks HTTP can drive a phone:
 
-Anything else speaks HTTP to the same server. The wire contract, the tree format and
-every command are in [shared/PROTOCOL.md](shared/PROTOCOL.md).
+```sh
+export T=your-token ID=your-device-id
+curl -sH "authorization: Bearer $T" localhost:8743/api/v1/devices
 
-## Trust model
+curl -sH "authorization: Bearer $T" \
+  "localhost:8743/api/v1/devices/$ID/screen?limit=40"
 
-One operator, one shared secret. `SOCIAL_PUPPET_TOKEN` gates both the WebSocket and the
-REST API, and without it the server runs open and says so at startup. Any holder of
+curl -sH "authorization: Bearer $T" -H 'content-type: application/json' \
+  -d '{"cmd":"tap","params":{"find":{"contentDesc":"Post"}}}' \
+  localhost:8743/api/v1/devices/$ID/command
+```
+
+A screen comes back as one line per visible node, with the window each belongs to:
+
+```
+15 | What's happening? @(147,453) 431x59
+24 | Post [btn] @(872,209) 176x95
+79 | yt [btn] [ime] @(115,1459) 272x127
+```
+
+Elements are addressed by **what they are**, not where they were. A find-spec over
+text, content description or resource id is resolved against the live tree at the
+moment of the tap, so it survives the layout changing between reading and acting, and
+fails loudly when the target genuinely is not there.
+
+## Commands
+
+| command | what it does |
+|---|---|
+| `launch` | open an app by package name |
+| `tap` | by find-spec, by pixel coordinates, or by normalized `xn`/`yn` |
+| `setText` | replace, append or clear; `perChar` fires the app's text watchers, `submit` presses the IME action |
+| `swipe`, `scroll` | gestures; `scroll` uses the container's own scroll action where there is one |
+| `scrollTo` | scroll until a find-spec resolves, looping on the device rather than per round trip |
+| `keyevent` | back, home, recents, enter, notifications, quickSettings, lock, d-pad |
+| `screenshot` | real pixels, downscaled and staged over HTTP |
+| `putFile`, `getFile`, `shareFile` | move files either way, hand one to another app |
+| `refresh`, `panic` | re-dump now; home and lock as a kill switch |
+
+Full wire contract, tree format and parameters: [shared/PROTOCOL.md](shared/PROTOCOL.md).
+
+For agents, `pi-extension/` registers these as `puppet_*` tools. Symlink it into
+`~/.pi/agent/extensions/` and `/reload`. It reads `SOCIAL_PUPPET_SERVER` (default
+`http://127.0.0.1:8743`) and `SOCIAL_PUPPET_TOKEN`.
+
+## Limits with no workaround
+
+- `FLAG_SECURE` windows, meaning banking apps and DRM video, cannot be screenshotted by
+  anything on the device.
+- An accessibility service cannot dismiss the lock screen, so a reboot needs a human.
+- Android exposes global actions rather than arbitrary key codes; the list above is the
+  entire keyboard.
+- Apps that hide content from the accessibility layer are invisible to this, in exactly
+  the way they are invisible to a screen reader.
+
+## Security and privacy
+
+**One operator, one shared secret.** `SOCIAL_PUPPET_TOKEN` gates both the WebSocket and
+the REST API, and without it the server runs open and says so at startup. Any holder of
 that token can drive any connected phone: there is no per-device authorisation, no user
-model, and no rate limiting. The phone's token travels in the WebSocket query string,
-where a reverse proxy will record it in its access log. Put the server behind TLS,
-treat the token as a password for the phone itself, and do not expose it to a network
-you do not control.
+model, no rate limiting. The phone's token travels in the WebSocket query string, where
+a reverse proxy will log it. Put the server behind TLS, treat the token as a password
+for the phone itself, and keep it off networks you do not control.
 
-The bridge app can read everything on screen and type into anything, which is the same
-capability a screen reader has and the same one Android malware abuses. It is
-sideloadable only, since automation through an accessibility service is against Play
-policy.
+**The bridge app can read everything on screen and type into anything.** That is the
+same capability a screen reader has, and the same one Android malware abuses. It is
+sideload-only, since automating through an accessibility service is against Play policy.
 
-**The session log records commands and their results.** Screen trees are logged as
-counts rather than content, and typed text is redacted to its length, but tapped labels
-and command parameters are written to `data/session-*.jsonl` in plaintext. Set
-`SOCIAL_PUPPET_LOG=0` to turn it off.
+**The session log records commands and results.** Screen trees are logged as counts
+rather than content and typed text is redacted to its length, but tapped labels and
+command parameters land in `data/session-*.jsonl` in plaintext. `SOCIAL_PUPPET_LOG=0`
+turns it off.
 
-## Layout
+## Repository
 
 | path | what |
 |---|---|
-| `server/` | Node and TypeScript hub: REST for controllers, WS for phones, per-device state, event ring, command queue, transfer staging |
+| `server/` | Node and TypeScript hub: REST for controllers, WS for phones, per-device state, event ring, command queue, file staging. One runtime dependency (`ws`) |
 | `android/` | the bridge app: `BridgeService` (tree dump, commands), `TreeDumper`, `ServerConnection`, setup UI |
-| `pi-extension/` | the `puppet_*` tools and a client library |
-| `shared/PROTOCOL.md` | the wire contract |
-| `.agents/skills/` | the driving playbook, including what breaks on real apps |
+| `pi-extension/` | the `puppet_*` tools, and a client library the self-test uses |
+| `shared/PROTOCOL.md` | the wire contract, versioned with the code |
+| `.agents/skills/` | the driving playbook: what actually breaks on real apps, and how to read the failures |
+
+## Contributing
+
+`npm run start` + `npm run mock` + `npx tsx pi-extension/self-test.ts` is the loop; keep
+it green. The mock phone implements every command, so most work needs no hardware.
+Protocol changes belong in `shared/PROTOCOL.md` in the same commit as the code, and any
+new command needs a mock implementation and a self-test line. Issues and pull requests
+are welcome, particularly reports of apps whose trees behave unusually.
+
+## Responsible use
+
+Automating an account is against the terms of service of most platforms, whatever the
+input method. This exists to operate your own phone. Do not use it to run accounts at
+scale, and do not point it at anyone else's device.
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE).
-
-## Use of it
-
-Automating an account is against the terms of service of most platforms, whatever the
-input method. This is built to operate one person's own phone. Do not use it to run
-accounts at scale.
+[Apache License 2.0](LICENSE).
