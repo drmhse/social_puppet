@@ -1,5 +1,7 @@
 node_modules/
 server/data/
+# Working notes: deployment paths, hostnames, device ids. Local only.
+SCRATCHPAD.md
 server/dist/
 *.log
 *.jsonl

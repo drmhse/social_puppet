@@ -76,6 +76,6 @@ See [references/x-twitter.md](references/x-twitter.md) for the current app map (
 **Deleting**: profile → Posts tab → find the post → its "Post options" (…) → "Delete post" → confirm "Delete".
 **Finding your own posts**: go to the PROFILE — the home feed is algorithmic and re-ranks; never hunt for your content there.
 
-## Caution (X-side risk)
+## Caution
 
-X's bot detection is behavioral and backend-side: pacing, cadence, bulk actions. Keep delays varied, avoid machine-regular intervals, cap bulk operations (follows/likes/DMs), and don't run identical action sequences back-to-back. The bridge is invisible at the input layer — the risk is pattern, not method.
+Automating an account is against X's terms of service, whatever the input method, and enforcement is behavioural: volume and repetition are what get accounts actioned. Drive only accounts you own and can afford to lose, keep the work to things you would plausibly do by hand, and do not use this for bulk follows, likes, DMs or posting. The bridge exists to operate one person's own phone, not to run accounts at scale.

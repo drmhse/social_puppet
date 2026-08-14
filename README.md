@@ -1,97 +1,98 @@
 # social-puppet
 
-Drive social apps on an Android phone through an accessibility bridge. **pi** talks
-HTTP to a **server**; the server relays commands over WebSocket to a **bridge app** on
-the phone; the bridge app reads the live accessibility tree (text, not pixels) and
-performs taps/types/swipes. It can also take a real screenshot when the answer is
-visual — see `puppet_screenshot`.
+Drive an Android phone from an agent or a script, through the accessibility tree.
+
+A bridge app on the phone reads the live accessibility tree, sends it as text, and
+performs taps, typing and gestures. A server relays between it and whatever is driving.
+The phone dials out, so it needs no inbound address; nothing ever connects to it.
 
 ```
-pi / scripts ──HTTP──▶ server ◀──WebSocket── bridge app ──AccessibilityService──▶ phone UI
+controller ──HTTP──▶ server ◀──WebSocket── bridge app ──AccessibilityService──▶ phone UI
 ```
 
-The phone is only ever driven by the bridge app — no `adb shell input`, no debug-mode
-piping. ADB is at most a dev-only network tunnel.
+Control is only ever the app. `adb` installs it and, in development, provides a network
+tunnel; it never drives the device.
+
+## What it can do
+
+Read the screen as text, including the keyboard and system windows. Tap, type, swipe
+and scroll, addressing elements by their text, content description or resource id
+rather than coordinates. Scroll until something appears. Take a real screenshot for the
+questions text cannot answer. Move files both ways and hand one to another app.
+
+Three limits have no workaround: `FLAG_SECURE` windows (banking, DRM video) cannot be
+captured, an accessibility service cannot dismiss the lock screen, and Android exposes
+global actions rather than arbitrary key codes.
+
+## Quickstart, no phone needed
+
+```sh
+npm install
+npm run start                        # server on :8743
+npm run mock                         # a fake phone, in another terminal
+npx tsx pi-extension/self-test.ts    # end-to-end check
+```
+
+## With a phone
+
+```sh
+cd android
+JAVA_HOME=<a JDK 17+> ./gradlew :app:assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb reverse tcp:8743 tcp:8743        # or point the app at your machine's LAN IP
+```
+
+In the app: Setup, enter the server URL and token, Save. Then Accessibility settings
+and turn the bridge on. Android 13 and later hide that toggle for sideloaded apps until
+"Restricted setting" is allowed from the app's info page.
+
+Verified on a Pixel 9. Requires Android 8 or later, Android 11 for screenshots.
+
+## Driving it
+
+The controller is a pi extension registering `puppet_*` tools: `puppet_devices`,
+`puppet_screen`, `puppet_screenshot`, `puppet_launch`, `puppet_tap`, `puppet_type`,
+`puppet_swipe`, `puppet_scroll`, `puppet_scroll_to`, `puppet_key`, `puppet_wait`,
+`puppet_refresh`, `puppet_send_file`, `puppet_get_file`, `puppet_share`,
+`puppet_panic`. Symlink `pi-extension/` into `~/.pi/agent/extensions/` and `/reload`.
+It reads `SOCIAL_PUPPET_SERVER` (default `http://127.0.0.1:8743`) and
+`SOCIAL_PUPPET_TOKEN`.
+
+Anything else speaks HTTP to the same server. The wire contract, the tree format and
+every command are in [shared/PROTOCOL.md](shared/PROTOCOL.md).
+
+## Trust model
+
+One operator, one shared secret. `SOCIAL_PUPPET_TOKEN` gates both the WebSocket and the
+REST API, and without it the server runs open and says so at startup. Any holder of
+that token can drive any connected phone: there is no per-device authorisation, no user
+model, and no rate limiting. The phone's token travels in the WebSocket query string,
+where a reverse proxy will record it in its access log. Put the server behind TLS,
+treat the token as a password for the phone itself, and do not expose it to a network
+you do not control.
+
+The bridge app can read everything on screen and type into anything, which is the same
+capability a screen reader has and the same one Android malware abuses. It is
+sideloadable only, since automation through an accessibility service is against Play
+policy.
+
+**The session log records commands and their results.** Screen trees are logged as
+counts rather than content, and typed text is redacted to its length, but tapped labels
+and command parameters are written to `data/session-*.jsonl` in plaintext. Set
+`SOCIAL_PUPPET_LOG=0` to turn it off.
 
 ## Layout
 
 | path | what |
 |---|---|
-| `server/` | Node + TS hub: REST for controllers, WS for phones, per-device state, event ring, command queue, JSONL session log |
-| `shared/PROTOCOL.md` | the wire contract (WS + HTTP + tree format + commands) |
-| `pi-extension/` | pi extension registering `puppet_*` tools; app-agnostic flows live here |
-| `android/` | the bridge app: `BridgeService` (a11y dump + commands), `ServerConnection` (WS out), `SetupActivity`/`MainActivity` |
-| `SCRATCHPAD.md` | working notes, decisions, issues |
+| `server/` | Node and TypeScript hub: REST for controllers, WS for phones, per-device state, event ring, command queue, transfer staging |
+| `android/` | the bridge app: `BridgeService` (tree dump, commands), `TreeDumper`, `ServerConnection`, setup UI |
+| `pi-extension/` | the `puppet_*` tools and a client library |
+| `shared/PROTOCOL.md` | the wire contract |
+| `.agents/skills/` | the driving playbook, including what breaks on real apps |
 
-## Quickstart (milestone 1 — no phone needed)
+## Use of it
 
-```sh
-npm install
-npm run start            # terminal 1: server on :8743
-npm run mock             # terminal 2: fake phone (simulated Twitter home/profile)
-npx tsx pi-extension/self-test.ts   # terminal 3: end-to-end control plane check
-```
-
-Expected: devices listed → screen read as text → tap "Profile" by find-spec →
-`wait for @janedev` matches → BACK returns home → missing-element tap fails cleanly.
-
-### Wire pi to it
-
-```sh
-ln -s /Users/mc/Desktop/projects/AI/social-puppet/pi-extension ~/.pi/agent/extensions/social-puppet
-```
-
-then `/reload` in pi. Tools: `puppet_devices`, `puppet_screen`, `puppet_screenshot`,
-`puppet_launch`, `puppet_tap`, `puppet_type`, `puppet_swipe`, `puppet_scroll`,
-`puppet_scroll_to`, `puppet_key`, `puppet_wait`, `puppet_refresh`,
-`puppet_send_file`, `puppet_get_file`, `puppet_share`, `puppet_panic`.
-
-Env for the extension: `SOCIAL_PUPPET_SERVER` (default `http://127.0.0.1:8743`),
-`SOCIAL_PUPPET_TOKEN`.
-
-## Security
-
-Set `SOCIAL_PUPPET_TOKEN` on the server for anything beyond local dev — without it the
-server is open and anyone on the network can drive connected phones. The bridge app is
-a powerful accessibility tool by design: read everything on screen, type into anything.
-Treat it accordingly.
-
-## Status
-
-- [x] Milestone 1 — protocol, server, mock device, pi extension (working)
-- [x] Milestone 2 — Android bridge app (a11y dump, gestures, WS client, setup)
-- [x] Milestone 3 — **real device: Twitter → profile page, driven through the app** (Pixel 9)
-- [ ] Milestone 4 — hardening (token everywhere, jitter, panic; screenshot fallback ✅)
-
-## Testing on a real phone
-
-1. **Start the server with a token** (phone and Mac on the same network):
-   ```sh
-   SOCIAL_PUPPET_TOKEN=changeme npm run start
-   # find your Mac's LAN IP:
-   ipconfig getifaddr en0
-   ```
-2. **Install the app + tunnel** (adb is used only for install and the network
-   tunnel — never to control):
-   ```sh
-   cd android
-   JAVA_HOME=/Applications/Android\ Studio.app/Contents/jbr/Contents/Home \
-     ./gradlew :app:assembleDebug
-   adb install -r app/build/outputs/apk/debug/app-debug.apk
-   adb reverse tcp:8743 tcp:8743
-   ```
-3. **Configure**: open the app → Setup → server URL `ws://127.0.0.1:8743` (with the
-   reverse tunnel) or `ws://<mac-ip>:8743` (LAN), token, name → Save.
-   Tap **Extend screen timeout to 30 min** and grant the write-settings prompt.
-4. **Enable the bridge**: Accessibility settings → social-puppet bridge → ON.
-5. **Drive it**: in pi (`/reload` if needed) → `puppet_devices` should list the phone;
-   then `puppet_screen`, `puppet_launch` (package `com.twitter.android`), `puppet_tap`,
-   `puppet_wait`…
-
-**Verified on Pixel 9 / Android 17 (Aug 2026):** launcher read as text; Twitter
-launched and its profile page opened via the drawer; `puppet_devices`/`puppet_screen`/
-`puppet_wait` worked from a real pi session. Play Protect rated the sideloaded app
-NOT_HARMFUL. Known rough edges: commands sent during the app's reconnect window can
-time out (retry); `enter` key ≈ click on focused field.
-
-See `SCRATCHPAD.md` for decisions (D1–D11) and the issue log (I1–I15).
+Automating an account is against the terms of service of most platforms, whatever the
+input method. This is built to operate one person's own phone. Do not use it to run
+accounts at scale.

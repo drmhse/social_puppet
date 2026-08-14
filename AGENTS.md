@@ -16,7 +16,8 @@ Never adb input.
   `self-test.ts`.
 - `android/` — bridge app (Kotlin). Build: `JAVA_HOME=<a JDK 17+> ./gradlew :app:assembleDebug`
   (the shell default here is JDK 11, which AGP rejects); install with `adb install -r`.
-- `SCRATCHPAD.md` — decisions + issues; update it when you change course.
+- `SCRATCHPAD.md` — decisions + issues; update it when you change course. Untracked:
+  it accumulates deployment paths and device details that do not belong in a public repo.
 
 ## Working here
 

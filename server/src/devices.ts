@@ -36,6 +36,14 @@ const EVENT_RING = 200;
  *  and they bypass the app's serial command queue. */
 const READ_ONLY = new Set(["refresh", "screenshot", "getFile"]);
 
+/** Everything typed through the bridge would otherwise land in the session log in
+ *  plaintext, including anything typed into a field the app does not mark as a
+ *  password. The log keeps the length, which is all that is useful for debugging. */
+function redact(cmd: string, params: Record<string, unknown>): Record<string, unknown> {
+  if (cmd !== "setText" || typeof params.text !== "string") return params;
+  return { ...params, text: `<${params.text.length} chars redacted>` };
+}
+
 /** State for one phone: socket, latest screen, event ring, command queue. */
 export class Device {
   id: string;
@@ -194,7 +202,7 @@ export class Device {
         deadline: Date.now() + timeoutMs,
         resolve,
       });
-      this.log.write({ kind: "command", id: this.id, cmd, params });
+      this.log.write({ kind: "command", id: this.id, cmd, params: redact(cmd, params) });
       this.pump();
     });
   }

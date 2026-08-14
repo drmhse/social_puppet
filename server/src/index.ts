@@ -398,6 +398,20 @@ wss.on("connection", (ws: WebSocket) => {
   });
 });
 
+// Forget devices that have been gone for a day. Each install generates a fresh
+// device id, so without this a phone reinstalled a few times leaves its old Device
+// objects, and their last screen trees, in memory for the life of the process.
+const DEVICE_TTL_MS = 24 * 60 * 60 * 1000;
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, d] of devices) {
+    if (!d.connected && now - (d.lastSeen ?? 0) > DEVICE_TTL_MS) {
+      devices.delete(id);
+      log.write({ kind: "device", id, action: "forgotten" });
+    }
+  }
+}, 60 * 60 * 1000).unref();
+
 // Heartbeat: ping every 30s; a phone that hasn't said anything in 45s is gone.
 setInterval(() => {
   const now = Date.now();

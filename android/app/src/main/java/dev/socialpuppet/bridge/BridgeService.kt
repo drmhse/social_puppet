@@ -72,6 +72,12 @@ class BridgeService : AccessibilityService() {
          *  flight instead of queueing behind it. */
         private val READ_ONLY_CMDS = setOf("refresh", "screenshot", "getFile")
 
+        /** Cache retention for files pushed to the phone. shareFile needs the file to
+         *  still be there after putFile, so it cannot be deleted on use; a day is long
+         *  enough for any flow and short enough that the cache cannot creep. */
+        private const val CACHE_TTL_MS = 24 * 60 * 60 * 1000L
+        private const val CACHE_MAX_BYTES = 512L * 1024 * 1024
+
         /** Scroll/scrollTo directions, named for how you move THROUGH the content
          *  ("down" = further down the feed). */
         private val DIRECTIONS = setOf("up", "down", "left", "right")
@@ -120,6 +126,9 @@ class BridgeService : AccessibilityService() {
         instance = this
         startForegroundWithNotification()
         started = true
+        // Anything left in the cache by a previous run is swept once here, so a phone
+        // that stopped mid-flow does not keep those bytes until the next transfer.
+        Thread { pruneCache() }.start()
         openConnection()
         mainHandler.postDelayed(statusTick, 60_000)
     }
@@ -1075,6 +1084,7 @@ class BridgeService : AccessibilityService() {
                             target.outputStream().use { input.copyTo(it, 64 * 1024) }
                         }
                         log("putFile $name (${target.length() / 1024} KiB)")
+                        pruneCache()
                         conn.sendResult(
                             cmdId,
                             true,
@@ -1174,6 +1184,36 @@ class BridgeService : AccessibilityService() {
                 done()
             }
         }.start()
+    }
+
+    /** Bound the bridge's cache. Every media push leaves a file behind, and a phone
+     *  posting a video a day would otherwise carry all of them forever: oldest go
+     *  first, by age and then by total size. Runs off the main thread. */
+    private fun pruneCache() {
+        try {
+            val files = cacheDir.listFiles()?.filter { it.isFile } ?: return
+            val now = System.currentTimeMillis()
+            val survivors = ArrayList<File>(files.size)
+            var total = 0L
+            for (f in files) {
+                if (now - f.lastModified() > CACHE_TTL_MS) {
+                    f.delete()
+                    continue
+                }
+                total += f.length()
+                survivors.add(f)
+            }
+            if (total <= CACHE_MAX_BYTES) return
+            survivors.sortBy { it.lastModified() }
+            for (f in survivors) {
+                if (total <= CACHE_MAX_BYTES) break
+                val len = f.length()
+                if (f.delete()) total -= len
+            }
+            log("cache pruned to ${total / (1024 * 1024)} MiB")
+        } catch (e: Throwable) {
+            Log.w(TAG, "cache prune failed", e)
+        }
     }
 
     private fun guessMime(name: String): String = when (name.substringAfterLast('.', "").lowercase()) {
