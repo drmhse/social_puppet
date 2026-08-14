@@ -13,10 +13,9 @@
  * index.ts to settings.json "extensions"), then /reload in pi.
  */
 import { readFileSync } from "node:fs";
+import { basename } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { readFileSync } from "node:fs";
-import { basename } from "node:path";
 
 const SERVER = (process.env.SOCIAL_PUPPET_SERVER ?? "http://127.0.0.1:8743").replace(/\/+$/, "");
 
