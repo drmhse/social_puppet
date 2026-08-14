@@ -41,7 +41,8 @@ screen size and app updates; re-derive from `puppet_screen` each session.
 1. `puppet_launch` com.twitter.android; `puppet_wait` for feed text.
 2. `puppet_tap` on the floating button (contentDesc "Post" or coords).
 3. `puppet_wait` for "What's happening?".
-4. `puppet_type` the text.
+4. `puppet_type` the text. (Add `perChar: true` only when the composer must react as
+   you type — an `@` mention picker, a hashtag suggestion list.)
 5. `puppet_tap` the composer's "Post" button (top-right).
 6. `puppet_wait` for a feed anchor → "Sending post…" appears then disappears (its
    disappearance is the send-complete signal); verify the post text on screen.
@@ -53,7 +54,8 @@ screen size and app updates; re-derive from `puppet_screen` each session.
 
 **Delete a post (mine):**
 1. Profile → Posts tab (active by default).
-2. Scroll (`puppet_swipe` up) until the post text is in the dump.
+2. `puppet_scroll_to` the post text (contains-match) — it scrolls and re-checks on the
+   phone; one call instead of a swipe/dump loop.
 3. `puppet_tap` its "Post options" (…, top-right of the post — nearest one above the
    matching text).
 4. `puppet_tap` "Delete post" in the sheet; `puppet_tap` "Delete" in the dialog.
@@ -67,6 +69,11 @@ screen size and app updates; re-derive from `puppet_screen` each session.
   re-dump and verify state after every tap that "did nothing".
 - The feed tab chips and profile tab rows are horizontal scrollers: the active tab
   may be off-viewport. Tap the tab label text, not a position.
+- With the composer open, ~40 extra entries tagged `[ime]` are the keyboard, and
+  `[system]` entries are the status bar — neither belongs to X. Filter them out
+  before reasoning about "what's on screen".
+- Media attachment is worth a `puppet_screenshot`: the tree calls an attached photo
+  "Image" with no way to tell WHICH image it is.
 - Post text nodes are clickable=false children; the clickable container is a parent
   view. Tapping by the text still works (gesture fallback) — expect
   `"method":"gesture"` in the result.

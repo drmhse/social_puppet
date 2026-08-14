@@ -156,6 +156,12 @@ async function handleApi(
       entries: d.tree.entries,
       text,
       truncated,
+      // Distinct from `truncated` above (which is this response's line limit):
+      // the DEVICE hit its node budget, so the screen itself is incomplete.
+      treeTruncated: d.tree.truncated === true,
+      nodeCount: d.tree.nodeCount,
+      windows: d.tree.windows,
+      screen: d.screen,
       ...(raw ? { nodes: d.tree.nodes } : {}),
     });
   }
@@ -183,7 +189,21 @@ async function handleApi(
       timeoutMs?: number;
     };
     const cmd = body.cmd;
-    const known = ["launch", "tap", "setText", "swipe", "keyevent", "scroll", "refresh", "panic", "putFile", "shareFile"];
+    const known = [
+      "launch",
+      "tap",
+      "setText",
+      "swipe",
+      "scroll",
+      "scrollTo",
+      "keyevent",
+      "screenshot",
+      "refresh",
+      "panic",
+      "putFile",
+      "getFile",
+      "shareFile",
+    ];
     if (typeof cmd !== "string" || !known.includes(cmd)) {
       return sendJson(res, 400, { error: { code: "bad_command", message: `unknown command '${String(cmd)}'` } });
     }
@@ -229,7 +249,10 @@ async function handleApi(
         lastRefresh = Date.now();
         void d.sendCommand("refresh", {}, 3000);
       }
-      await sleep(300);
+      // Wake on the next tree push rather than on a fixed tick: a wait that would
+      // have cost up to 300ms of polling latency now returns as soon as the phone
+      // says the screen changed. The sleep is just the ceiling.
+      await Promise.race([d.nextTree(300), sleep(300)]);
     }
   }
 
@@ -310,7 +333,7 @@ wss.on("connection", (ws: WebSocket) => {
         devices.set(h.deviceId, d);
         wsToDevice.set(ws, d);
         d.attach(ws);
-        d.hello(h.name, h.appVersion, h.screen);
+        d.hello(h.name, h.appVersion, h.screen, h.caps);
         log.write({ kind: "device", id: h.deviceId, action: "connect" });
         break;
       }
@@ -318,7 +341,11 @@ wss.on("connection", (ws: WebSocket) => {
         const d = device;
         if (!d) return;
         const nodes = (msg.nodes ?? []) as never[];
-        d.onTree(nodes, msg.pkg as string | undefined, msg.screen as never | undefined);
+        d.onTree(nodes, msg.pkg as string | undefined, msg.screen as never | undefined, {
+          truncated: msg.truncated === true,
+          nodeCount: typeof msg.nodeCount === "number" ? msg.nodeCount : undefined,
+          windows: (msg.windows ?? undefined) as never,
+        });
         break;
       }
       case "event": {

@@ -3,6 +3,7 @@ import { WebSocket } from "ws";
 import {
   A11yEvent,
   CommandEnvelope,
+  DeviceCaps,
   DeviceInfo,
   FlatEntry,
   ResultEnvelope,
@@ -10,6 +11,7 @@ import {
   ScreenState,
   TreeNode,
   WaitMatch,
+  WindowTag,
 } from "./types.js";
 import { entriesToText, flattenTree, matchEntries } from "./flatten.js";
 import { SessionLog } from "./log.js";
@@ -30,12 +32,17 @@ interface QueuedCmd {
 const MAX_QUEUE = 8;
 const EVENT_RING = 200;
 
+/** Commands that don't touch the UI: they may run before the first tree arrives
+ *  and they bypass the app's serial command queue. */
+const READ_ONLY = new Set(["refresh", "screenshot", "getFile"]);
+
 /** State for one phone: socket, latest screen, event ring, command queue. */
 export class Device {
   id: string;
   name?: string;
   appVersion?: string;
   screen?: ScreenSize;
+  caps?: DeviceCaps;
   ws: WebSocket | null = null;
   connected = false;
   ready = false;
@@ -49,6 +56,7 @@ export class Device {
   lastStatusAt?: number;
 
   private seq = 0;
+  private treeWaiters: Array<() => void> = [];
   private pending = new Map<string, Pending>();
   private queue: QueuedCmd[] = [];
   private pumping = false;
@@ -83,19 +91,39 @@ export class Device {
     this.log.write({ kind: "device", id: this.id, action: "disconnect" });
   }
 
-  hello(name?: string, appVersion?: string, screen?: ScreenSize): void {
+  hello(name?: string, appVersion?: string, screen?: ScreenSize, caps?: DeviceCaps): void {
     this.name = name;
     this.appVersion = appVersion;
     this.screen = screen;
-    this.log.write({ kind: "device", id: this.id, action: "hello", name, appVersion, screen });
+    this.caps = caps;
+    this.log.write({ kind: "device", id: this.id, action: "hello", name, appVersion, screen, caps });
   }
 
-  onTree(nodes: TreeNode[], pkg?: string, screen?: ScreenSize): void {
+  onTree(
+    nodes: TreeNode[],
+    pkg?: string,
+    screen?: ScreenSize,
+    meta?: { truncated?: boolean; nodeCount?: number; windows?: WindowTag[] },
+  ): void {
     this.seq += 1;
     const entries = flattenTree(nodes);
-    this.tree = { seq: this.seq, pkg, entries, nodes, at: Date.now() };
+    this.tree = {
+      seq: this.seq,
+      pkg,
+      entries,
+      nodes,
+      at: Date.now(),
+      truncated: meta?.truncated,
+      nodeCount: meta?.nodeCount,
+      windows: meta?.windows,
+    };
     this.ready = true;
     if (screen) this.screen = screen;
+    // Wake anything blocked in /wait the moment a tree lands, instead of making it
+    // discover the change on its next poll tick.
+    const waiters = this.treeWaiters;
+    this.treeWaiters = [];
+    for (const w of waiters) w();
     this.pushEvent({ kind: "screen", pkg });
     this.log.write({
       kind: "tree",
@@ -103,7 +131,8 @@ export class Device {
       seq: this.seq,
       pkg,
       entries: entries.length,
-      nodes: nodes.length,
+      nodes: meta?.nodeCount ?? nodes.length,
+      truncated: meta?.truncated,
     });
   }
 
@@ -131,6 +160,23 @@ export class Device {
     }
   }
 
+  /** Resolves when the next tree arrives (or after [timeoutMs], so a caller that
+   *  races this against nothing else can't hang). */
+  nextTree(timeoutMs: number): Promise<void> {
+    return new Promise((resolve) => {
+      let done = false;
+      const fire = () => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(fire, timeoutMs);
+      timer.unref?.();
+      this.treeWaiters.push(fire);
+    });
+  }
+
   eventsSince(since: number): A11yEvent[] {
     return this.events.filter((e) => e.seq > since);
   }
@@ -139,7 +185,7 @@ export class Device {
   sendCommand(cmd: string, params: Record<string, unknown>, timeoutMs = 15000): Promise<unknown> {
     return new Promise((resolve) => {
       if (!this.connected) return resolve({ ok: false, error: "device_disconnected" });
-      if (cmd !== "refresh" && !this.ready) return resolve({ ok: false, error: "device_not_ready" });
+      if (!READ_ONLY.has(cmd) && !this.ready) return resolve({ ok: false, error: "device_not_ready" });
       if (this.queue.length >= MAX_QUEUE) return resolve({ ok: false, error: "queue_full" });
       this.queue.push({
         cmdId: randomUUID(),
@@ -225,6 +271,10 @@ export class Device {
       charging: this.charging,
       lastStatusAt: this.lastStatusAt,
       entries: this.tree?.entries.length ?? 0,
+      caps: this.caps,
+      truncated: this.tree?.truncated,
+      nodeCount: this.tree?.nodeCount,
+      windows: this.tree?.windows,
     };
   }
 }

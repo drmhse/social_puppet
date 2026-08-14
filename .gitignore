@@ -3,3 +3,9 @@ server/data/
 server/dist/
 *.log
 *.jsonl
+
+# Android build output / local SDK config
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties

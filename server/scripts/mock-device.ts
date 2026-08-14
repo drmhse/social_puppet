@@ -14,6 +14,8 @@ import { flattenTree, matchEntries } from "../src/flatten.js";
 import { FindSpec, TreeNode } from "../src/types.js";
 
 const WS_URL = process.env.SOCIAL_PUPPET_WS ?? "ws://127.0.0.1:8743";
+/** Same server over HTTP — the mock stages screenshots/files here like the app does. */
+const HTTP_URL = WS_URL.replace(/^ws/, "http").replace(/\/+$/, "");
 const TOKEN = process.env.SOCIAL_PUPPET_TOKEN ?? "";
 const DEVICE_ID = process.env.SOCIAL_PUPPET_DEVICE_ID ?? "mock-phone-1";
 const NAME = process.env.SOCIAL_PUPPET_NAME ?? "Mock Pixel 8";
@@ -140,11 +142,49 @@ function currentTree(): TreeNode[] {
   ];
 }
 
+function countNodes(nodes: TreeNode[]): number {
+  let n = 0;
+  for (const x of nodes) n += 1 + countNodes(x.children ?? []);
+  return n;
+}
+
 function pushTree(): void {
   if (!ws) return;
   seq += 1;
-  ws.send(JSON.stringify({ type: "tree", seq, pkg: app, nodes: currentTree() }));
+  const nodes = currentTree();
+  const count = countNodes(nodes);
+  ws.send(
+    JSON.stringify({
+      type: "tree",
+      seq,
+      pkg: app,
+      nodeCount: count,
+      truncated: false,
+      screen: { w: SCREEN[0], h: SCREEN[1], orientation: "portrait", density: 2.75 },
+      windows: [{ id: 1, type: "active", active: true, pkg: app, nodes: count }],
+      nodes,
+    }),
+  );
   ws.send(JSON.stringify({ type: "event", kind: "window", pkg: app, cls: screen }));
+}
+
+/** A 1x1 PNG — enough for the screenshot plumbing to be exercised end to end. */
+const PIXEL_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==",
+  "base64",
+);
+
+/** Stage bytes on the server exactly as the app's uploadToServer does. */
+async function stage(name: string, mime: string, body: Buffer): Promise<Record<string, unknown>> {
+  const headers: Record<string, string> = {
+    "content-type": mime,
+    "x-file-name": encodeURIComponent(name),
+    "x-file-mime": mime,
+  };
+  if (TOKEN) headers["authorization"] = `Bearer ${TOKEN}`;
+  const res = await fetch(`${HTTP_URL}/api/v1/transfer`, { method: "POST", headers, body });
+  if (!res.ok) throw new Error(`stage failed: HTTP ${res.status}`);
+  return (await res.json()) as Record<string, unknown>;
 }
 function handleCommand(cmd: string, params: Record<string, unknown>): { ok: boolean; result?: unknown; error?: string } {
   switch (cmd) {
@@ -175,12 +215,35 @@ function handleCommand(cmd: string, params: Record<string, unknown>): { ok: bool
         }
         return { ok: false, error: "not_found", result: { find } };
       }
-      const x = Number(params.x);
-      const y = Number(params.y);
+      // Accept both pixel and normalized (0..1) coordinates, like the app does.
+      const x = params.x !== undefined ? Number(params.x) : Number(params.xn) * SCREEN[0];
+      const y = params.y !== undefined ? Number(params.y) : Number(params.yn) * SCREEN[1];
+      if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        return { ok: false, error: "tap needs x+y, xn+yn or a find-spec" };
+      }
       return { ok: true, result: { tapped: { x, y }, simulated: "coords" } };
     }
     case "setText": {
-      return { ok: true, result: { set: true, text: String(params.text ?? "") } };
+      const mode = String(params.mode ?? "replace");
+      const text = mode === "clear" ? "" : String(params.text ?? "");
+      return {
+        ok: true,
+        result: {
+          set: true,
+          mode,
+          text,
+          steps: params.perChar ? text.length : 1,
+          length: text.length,
+          submitted: params.submit === true,
+        },
+      };
+    }
+    case "scrollTo": {
+      const find = (params.find ?? {}) as FindSpec;
+      const hit = matchEntries(flattenTree(currentTree()), find);
+      if (hit) return { ok: true, result: { found: true, scrolls: 0, text: hit.text } };
+      // The mock has no off-screen content, so a miss is a miss.
+      return { ok: false, error: `not found after ${params.maxScrolls ?? 8} scroll(s)`, result: { found: false } };
     }
     case "swipe":
     case "scroll": {
@@ -207,6 +270,25 @@ function handleCommand(cmd: string, params: Record<string, unknown>): { ok: bool
   }
 }
 
+/** Commands whose result is produced asynchronously (they stage bytes first). */
+async function handleAsyncCommand(
+  cmd: string,
+  params: Record<string, unknown>,
+): Promise<{ ok: boolean; result?: unknown; error?: string }> {
+  try {
+    if (cmd === "screenshot") {
+      const meta = await stage(`screen-${Date.now()}.png`, "image/png", PIXEL_PNG);
+      return { ok: true, result: { ...meta, w: 1, h: 1, mime: "image/png" } };
+    }
+    // getFile
+    const name = String(params.name ?? "mock.txt");
+    const meta = await stage(name, "text/plain", Buffer.from(`mock file ${name}\n`, "utf8"));
+    return { ok: true, result: { ...meta, mime: "text/plain" } };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 function connect(): void {
   const url = TOKEN ? `${WS_URL}/?token=${encodeURIComponent(TOKEN)}` : WS_URL;
   ws = new WebSocket(url);
@@ -219,7 +301,16 @@ function connect(): void {
         deviceId: DEVICE_ID,
         name: NAME,
         appVersion: "0.1.0-mock",
-        screen: { w: SCREEN[0], h: SCREEN[1] },
+        screen: { w: SCREEN[0], h: SCREEN[1], orientation: "portrait", density: 2.75 },
+        caps: {
+          screenshot: true,
+          imeEnter: true,
+          dpadKeys: true,
+          lockScreen: true,
+          multiWindow: false,
+          maxNodes: 1500,
+          sdk: 35,
+        },
       }),
     );
     ws?.send(JSON.stringify({ type: "status", battery: 91, charging: true }));
@@ -240,6 +331,12 @@ function connect(): void {
       const cmd = String(msg.cmd ?? "");
       const params = (msg.params ?? {}) as Record<string, unknown>;
       console.log(`[mock] cmd ${cmd} ${JSON.stringify(params)}`);
+      if (cmd === "screenshot" || cmd === "getFile") {
+        void handleAsyncCommand(cmd, params).then((res) =>
+          ws?.send(JSON.stringify({ type: "result", cmdId: msg.cmdId, ...res })),
+        );
+        return;
+      }
       const res = handleCommand(cmd, params);
       ws?.send(JSON.stringify({ type: "result", cmdId: msg.cmdId, ...res }));
       return;

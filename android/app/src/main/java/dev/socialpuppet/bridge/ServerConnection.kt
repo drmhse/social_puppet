@@ -29,6 +29,8 @@ class ServerConnection(
     private var ws: WebSocket? = null
     private var reconnectAttempt = 0
     private var stopped = false
+    @Volatile
+    private var opened = false
 
     fun connect(url: String) {
         this.url = url
@@ -56,6 +58,7 @@ class ServerConnection(
     private val listener = object : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
             reconnectAttempt = 0
+            opened = true
             onStatus("connected")
             onOpen()
         }
@@ -80,10 +83,12 @@ class ServerConnection(
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             Log.w(TAG, "ws failure: ${t.message}")
+            opened = false
             scheduleReconnect()
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+            opened = false
             scheduleReconnect()
         }
     }
@@ -91,6 +96,10 @@ class ServerConnection(
     fun send(text: String) {
         ws?.send(text)
     }
+
+    /** True once the socket is up. Callers use this to skip expensive work (a full
+     *  tree walk) that would only be thrown away while we're reconnecting. */
+    fun isOpen(): Boolean = ws != null && !stopped && opened
 
     fun sendResult(cmdId: String, ok: Boolean, result: JSONObject? = null, error: String? = null) {
         val o = JSONObject()
@@ -104,6 +113,7 @@ class ServerConnection(
 
     fun close() {
         stopped = true
+        opened = false
         mainHandler.removeCallbacksAndMessages(null)
         ws?.close(1000, "bridge stopped")
         ws = null

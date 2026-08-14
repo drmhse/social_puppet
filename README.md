@@ -2,8 +2,9 @@
 
 Drive social apps on an Android phone through an accessibility bridge. **pi** talks
 HTTP to a **server**; the server relays commands over WebSocket to a **bridge app** on
-the phone; the bridge app reads the live accessibility tree (no screenshots) and
-performs taps/types/swipes.
+the phone; the bridge app reads the live accessibility tree (text, not pixels) and
+performs taps/types/swipes. It can also take a real screenshot when the answer is
+visual — see `puppet_screenshot`.
 
 ```
 pi / scripts ──HTTP──▶ server ◀──WebSocket── bridge app ──AccessibilityService──▶ phone UI
@@ -40,9 +41,10 @@ Expected: devices listed → screen read as text → tap "Profile" by find-spec 
 ln -s /Users/mc/Desktop/projects/AI/social-puppet/pi-extension ~/.pi/agent/extensions/social-puppet
 ```
 
-then `/reload` in pi. Tools: `puppet_devices`, `puppet_screen`, `puppet_launch`,
-`puppet_tap`, `puppet_type`, `puppet_swipe`, `puppet_key`, `puppet_wait`,
-`puppet_refresh`, `puppet_panic`.
+then `/reload` in pi. Tools: `puppet_devices`, `puppet_screen`, `puppet_screenshot`,
+`puppet_launch`, `puppet_tap`, `puppet_type`, `puppet_swipe`, `puppet_scroll`,
+`puppet_scroll_to`, `puppet_key`, `puppet_wait`, `puppet_refresh`,
+`puppet_send_file`, `puppet_get_file`, `puppet_share`, `puppet_panic`.
 
 Env for the extension: `SOCIAL_PUPPET_SERVER` (default `http://127.0.0.1:8743`),
 `SOCIAL_PUPPET_TOKEN`.
@@ -59,7 +61,7 @@ Treat it accordingly.
 - [x] Milestone 1 — protocol, server, mock device, pi extension (working)
 - [x] Milestone 2 — Android bridge app (a11y dump, gestures, WS client, setup)
 - [x] Milestone 3 — **real device: Twitter → profile page, driven through the app** (Pixel 9)
-- [ ] Milestone 4 — hardening (token everywhere, jitter, panic, screenshot fallback)
+- [ ] Milestone 4 — hardening (token everywhere, jitter, panic; screenshot fallback ✅)
 
 ## Testing on a real phone
 

@@ -1,6 +1,28 @@
 export interface ScreenSize {
   w: number;
   h: number;
+  orientation?: "portrait" | "landscape";
+  density?: number;
+}
+
+/** Which window a root node belongs to (active app, IME, system dialog, …). */
+export interface WindowTag {
+  id: number;
+  type: string;
+  active: boolean;
+  pkg?: string | null;
+  nodes?: number;
+}
+
+/** What the connected app/OS supports, reported in `hello`. */
+export interface DeviceCaps {
+  screenshot?: boolean;
+  imeEnter?: boolean;
+  dpadKeys?: boolean;
+  lockScreen?: boolean;
+  multiWindow?: boolean;
+  maxNodes?: number;
+  sdk?: number;
 }
 
 export interface TreeNode {
@@ -15,6 +37,8 @@ export interface TreeNode {
   /** left, top, right, bottom in screen px */
   bounds: [number, number, number, number];
   children?: TreeNode[];
+  /** Present on window roots only. */
+  window?: WindowTag | null;
 }
 
 export interface FlatEntry {
@@ -28,6 +52,8 @@ export interface FlatEntry {
   w: number;
   h: number;
   clickable: boolean;
+  /** Window type when the node is NOT in the active window (ime, system, …). */
+  win?: string;
 }
 
 export interface ScreenState {
@@ -36,6 +62,10 @@ export interface ScreenState {
   entries: FlatEntry[];
   nodes: TreeNode[];
   at: number; // epoch ms
+  /** The app hit its node budget — absence of a match may just mean "past the cut". */
+  truncated?: boolean;
+  nodeCount?: number;
+  windows?: WindowTag[];
 }
 
 export interface A11yEvent {
@@ -82,6 +112,7 @@ export interface HelloMessage {
   name?: string;
   appVersion?: string;
   screen?: ScreenSize;
+  caps?: DeviceCaps;
 }
 
 export interface DeviceInfo {
@@ -99,4 +130,8 @@ export interface DeviceInfo {
   charging?: boolean;
   lastStatusAt?: number;
   entries: number;
+  caps?: DeviceCaps;
+  truncated?: boolean;
+  nodeCount?: number;
+  windows?: WindowTag[];
 }
