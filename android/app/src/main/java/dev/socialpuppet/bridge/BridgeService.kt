@@ -20,8 +20,13 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import androidx.core.content.FileProvider
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import org.json.JSONObject
+import java.io.File
 import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 
 /**
  * The bridge: an AccessibilityService that dumps the current screen as a text
@@ -36,6 +41,10 @@ class BridgeService : AccessibilityService() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val gestureThread = HandlerThread("gesture").apply { start() }
     private val gestureHandler = Handler(gestureThread.looper)
+    private val http = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(0, TimeUnit.MILLISECONDS) // big files; the command watchdog bounds us
+        .build()
     private var connection: ServerConnection? = null
     private var lastTreeJson: String? = null
     private var dumpScheduled = false
@@ -80,7 +89,10 @@ class BridgeService : AccessibilityService() {
         started = true
         lastTreeJson = null
         connection = ServerConnection(
-            onCommand = { cmd, params, cmdId -> executor.enqueue(cmd, params, cmdId) },
+            onCommand = { cmd, params, cmdId ->
+                // putFile downloads big files — give it a long watchdog.
+                executor.enqueue(cmd, params, cmdId, if (cmd == "putFile") 300_000 else 12_000)
+            },
             onStatus = { s ->
                 status = s
                 log(s)
@@ -250,12 +262,19 @@ class BridgeService : AccessibilityService() {
 
     // ------------------------------------------------------------------ command execution
 
+    private data class Job(
+        val cmd: String,
+        val params: JSONObject,
+        val cmdId: String,
+        val timeoutMs: Long,
+    )
+
     private inner class CommandExecutor {
-        private val queue = LinkedBlockingQueue<Triple<String, JSONObject, String>>()
+        private val queue = LinkedBlockingQueue<Job>()
         private var busy = false
 
-        fun enqueue(cmd: String, params: JSONObject, cmdId: String) {
-            queue.put(Triple(cmd, params, cmdId))
+        fun enqueue(cmd: String, params: JSONObject, cmdId: String, timeoutMs: Long = 12_000) {
+            queue.put(Job(cmd, params, cmdId, timeoutMs))
             mainHandler.post { pump() }
         }
 
@@ -271,12 +290,12 @@ class BridgeService : AccessibilityService() {
             val watchdog = Runnable {
                 if (busy) {
                     busy = false
-                    connection?.sendResult(job.third, false, error = "command timed out on device (no result in 20s)")
+                    connection?.sendResult(job.cmdId, false, error = "command timed out on device (${job.cmd})")
                     mainHandler.post { pump() }
                 }
             }
-            mainHandler.postDelayed(watchdog, 12000)
-            execute(job.first, job.second, job.third) {
+            mainHandler.postDelayed(watchdog, job.timeoutMs)
+            execute(job.cmd, job.params, job.cmdId) {
                 mainHandler.removeCallbacks(watchdog)
                 busy = false
                 mainHandler.post { pump() }
@@ -316,6 +335,8 @@ class BridgeService : AccessibilityService() {
                     conn.sendResult(cmdId, true, JSONObject().put("panic", true))
                     done()
                 }
+                "putFile" -> putFile(params, cmdId, done)
+                "shareFile" -> shareFile(params, cmdId, done)
                 else -> {
                     conn.sendResult(cmdId, false, error = "unknown command: $cmd")
                     done()
@@ -468,6 +489,89 @@ class BridgeService : AccessibilityService() {
             if (ok) JSONObject().put("key", key) else null,
             if (ok) null else "keyevent failed: $key",
         )
+    }
+
+    // ------------------------------------------------------------------ file transfer & share
+
+    /** Download a file the server staged for us (via /transfer/<id>) into our
+     *  cache. Runs off the main thread — files can be large. */
+    private fun putFile(params: JSONObject, cmdId: String, done: () -> Unit) {
+        val conn = connection ?: return done()
+        val fileId = params.optString("fileId")
+        if (fileId.isBlank()) {
+            conn.sendResult(cmdId, false, error = "putFile needs fileId")
+            return done()
+        }
+        val name = params.optString("name").ifBlank { fileId }
+        val mime = params.optString("mime").ifBlank { "application/octet-stream" }
+        Thread {
+            try {
+                val url = Config.httpFromWs(Config.serverUrl) + "/transfer/" + fileId
+                val req = Request.Builder().url(url)
+                    .apply { if (Config.token.isNotBlank()) header("Authorization", "Bearer ${Config.token}") }
+                    .build()
+                http.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) {
+                        conn.sendResult(cmdId, false, error = "download HTTP ${resp.code}")
+                    } else {
+                        val target = File(cacheDir, name)
+                        resp.body?.byteStream()?.use { input ->
+                            target.outputStream().use { input.copyTo(it) }
+                        }
+                        log("putFile $name (${target.length() / 1024} KiB)")
+                        conn.sendResult(
+                            cmdId,
+                            true,
+                            JSONObject()
+                                .put("path", target.absolutePath)
+                                .put("size", target.length()),
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "putFile failed", e)
+                conn.sendResult(cmdId, false, error = "putFile failed: ${e.message}")
+            } finally {
+                done()
+            }
+        }.start()
+    }
+
+    /** Hand a file on the phone to another app via ACTION_SEND. With
+     *  targetPackage=com.twitter.android this opens the X composer with the
+     *  media attached; the a11y tools then type text and tap Post. */
+    private fun shareFile(params: JSONObject, cmdId: String, done: () -> Unit) {
+        val conn = connection ?: return done()
+        try {
+            val fileId = params.optString("fileId")
+            val name = params.optString("name").ifBlank { fileId }
+            val mime = params.optString("mime").ifBlank { "application/octet-stream" }
+            val targetPackage = params.optString("targetPackage").ifBlank { null }
+            val file = File(cacheDir, name)
+            if (!file.exists()) {
+                conn.sendResult(cmdId, false, error = "file not on device (run putFile first)")
+                return done()
+            }
+            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = mime
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            if (targetPackage != null) intent.setPackage(targetPackage)
+            startActivity(if (targetPackage == null) Intent.createChooser(intent, "Share via social-puppet") else intent)
+            log("share $name ($mime)${targetPackage?.let { " → $it" } ?: ""}")
+            conn.sendResult(
+                cmdId,
+                true,
+                JSONObject().put("shared", name).put("mime", mime).put("targetPackage", targetPackage ?: "chooser"),
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "shareFile failed", e)
+            conn.sendResult(cmdId, false, error = "shareFile failed: ${e.message}")
+        } finally {
+            done()
+        }
     }
 
     // ------------------------------------------------------------------ gestures & find

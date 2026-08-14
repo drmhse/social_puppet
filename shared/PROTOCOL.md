@@ -75,6 +75,8 @@ hash. Zero-size, offscreen, or invisible nodes should be dropped at the source.
 | `scroll` | `{ "direction": "down", "distance": 800 }` | |
 | `refresh` | `{}` | re-dump the current tree now |
 | `panic` | `{}` | HOME + lock screen (kill switch) |
+| `putFile` | `{ "fileId", "name", "mime" }` | download a staged transfer into the app cache (off-main; long watchdog) |
+| `shareFile` | `{ "name", "mime", "targetPackage"? }` | ACTION_SEND via FileProvider; `com.twitter.android` opens the X composer with media attached |
 
 ### find-specs
 
@@ -105,9 +107,15 @@ All under `/api/v1`. Errors: `{ "error": { "code": "…", "message": "…" } }`.
 | POST | `/devices/:id/command` | `{ "cmd", "params", "timeoutMs" }` → `{ ok, result }` or `{ ok: false, error }` |
 | POST | `/devices/:id/wait` | `{ "match": {…}, "present": true, "timeoutMs" }` → `{ matched, entry?, screen }` |
 | POST | `/devices/:id/panic` | kill switch |
+| POST | `/api/v1/transfer` | upload a file (raw body + `X-File-Name`, `X-File-Mime` headers) → `{ fileId, name, mime, size, url }` |
+| GET | `/transfer/:id` | download a staged file (token-gated; the phone pulls this over the same tunnel) |
 
 Device status: `connected` = WS alive, `ready` = at least one tree received on this
 connection. A reconnect invalidates the tree until a fresh one arrives.
+
+Files staged for transfer live under the server's data dir with a 1h TTL. Bytes never
+cross the WebSocket: pi uploads over HTTP, the app downloads over HTTP, and
+`shareFile` hands the local file to the target app via an intent.
 
 ## Errors
 
