@@ -91,6 +91,10 @@ and command parameters are written to `data/session-*.jsonl` in plaintext. Set
 | `shared/PROTOCOL.md` | the wire contract |
 | `.agents/skills/` | the driving playbook, including what breaks on real apps |
 
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
+
 ## Use of it
 
 Automating an account is against the terms of service of most platforms, whatever the
