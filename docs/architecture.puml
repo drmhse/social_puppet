@@ -1,0 +1,96 @@
+@startuml architecture
+' Rendered with:
+'   java -jar plantuml.jar -tpng -o . docs/architecture.puml
+' Sequence layout needs no graphviz install.
+title social-puppet: connect, read, act
+
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 13
+skinparam TitleFontSize 16
+skinparam TitleFontColor #1A1A1A
+skinparam ArrowColor #1A1A1A
+skinparam ArrowFontColor #1A1A1A
+skinparam sequence {
+  ParticipantBackgroundColor #F2F0EE
+  ParticipantBorderColor #B9B4AF
+  ParticipantFontColor #1A1A1A
+  ActorBackgroundColor #F2F0EE
+  LifeLineBorderColor #D9D5D1
+  LifeLineBackgroundColor #F2F0EE
+  BoxBorderColor #D9D5D1
+  BoxFontColor #8C8681
+  GroupBackgroundColor #F2F0EE
+  GroupBorderColor #B9B4AF
+  GroupFontColor #1A1A1A
+  GroupHeaderFontColor #1A1A1A
+  DividerBackgroundColor #FFFFFF
+  DividerBorderColor #D9D5D1
+  DividerFontColor #8C8681
+}
+skinparam note {
+  BackgroundColor #FCF3F1
+  BorderColor #C0391B
+  FontColor #1A1A1A
+}
+
+participant "controller\nagent, script, curl" as C
+participant "server\n:8743" as S
+database "transfer\nstaging" as T
+participant "bridge app\nAccessibilityService" as B
+participant "app under\ncontrol" as A
+
+== the phone dials out ==
+
+B -[#C0391B]> S : WebSocket connect, token in the query
+note right of B
+  Nothing ever connects to the phone,
+  so it needs no inbound address.
+end note
+B -[#C0391B]> S : hello: device id, screen size, capabilities
+
+== the screen streams as text ==
+
+loop on every content change, at most one per 300 ms
+  A -> B : accessibility tree
+  B -> B : walk, hashing each node
+  alt hash differs from the last push
+    B -[#C0391B]> S : tree: nodes, windows, truncation flag
+  else unchanged
+    B -> B : nothing serialized, nothing sent
+  end
+end
+
+C -> S : GET /api/v1/devices/:id/screen
+S -> C : one line per visible node
+
+== acting on it ==
+
+C -> S : POST /api/v1/devices/:id/command\ntap by text
+S -[#C0391B]> B : cmd
+B -> A : resolve the match against the LIVE tree
+note right of B
+  Late binding: the target is located
+  at the instant of the tap, not when
+  the controller read the screen.
+end note
+A -> B : node
+B -> A : dispatch the gesture
+B -[#C0391B]> S : result
+S -> C : ok
+
+== pixels, when text cannot answer ==
+
+C -> S : POST /api/v1/devices/:id/command\nscreenshot
+S -[#C0391B]> B : cmd
+B -> B : capture, downscale, encode
+B -> T : upload over HTTP
+B -[#C0391B]> S : result: file id
+C -> T : GET /transfer/:id
+note over T
+  File bytes never cross the WebSocket.
+  The socket carries only the identifier.
+end note
+
+@enduml

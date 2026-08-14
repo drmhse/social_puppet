@@ -15,6 +15,14 @@ The phone dials out, so it works from behind NAT with no inbound address and sur
 moving between Wi-Fi and cellular. `adb` installs the app and, in development, provides
 a network tunnel; it never drives the device.
 
+![Sequence diagram: the phone opens the WebSocket, streams its screen only when a
+content hash changes, and resolves a tap against the live tree at the moment it
+runs; screenshot bytes are staged over HTTP rather than sent on the
+socket.](docs/architecture.png)
+
+The diagram is generated from [docs/architecture.puml](docs/architecture.puml):
+`java -jar plantuml.jar -tpng -o . docs/architecture.puml`.
+
 There is a longer write-up of the design in
 [Driving a Phone Through Its Accessibility Tree](https://www.drmhse.com/posts/driving-a-phone-through-its-accessibility-tree/).
 
